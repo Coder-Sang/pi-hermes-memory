@@ -34,6 +34,52 @@ describe("registerSessionSearchTool", () => {
     assert.doesNotMatch(schema, /markdown/);
     assert.match(schema, /"minimum":1/);
     assert.match(schema, /"maximum":20/);
+    assert.match(captured.description, /session IDs/);
+  });
+
+  it("exposes the matching session_id in single and multiple legacy results", async () => {
+    let captured: any;
+    const mockPi = {
+      registerTool: (def: any) => { captured = def; },
+    } as any;
+    const memoryDir = makeSessionsDir();
+    const dbManager = new DatabaseManager(memoryDir);
+
+    try {
+      for (const [sessionId, minute] of [["legacy-session-1", "01"], ["legacy-session-2", "02"]] as const) {
+        indexSession(dbManager, {
+          id: sessionId,
+          project: "legacy-project",
+          cwd: "/work/legacy",
+          startedAt: `2026-07-11T00:${minute}:00.000Z`,
+          endedAt: null,
+          messages: [{
+            id: `${sessionId}-message`,
+            role: "assistant",
+            content: `legacy-session-id-needle from ${sessionId}`,
+            timestamp: `2026-07-11T00:${minute}:00.000Z`,
+          }],
+        });
+      }
+      registerSessionSearchTool(mockPi, dbManager);
+
+      const single = await captured.execute("tc-single-session-id", {
+        query: "legacy-session-id-needle",
+        limit: 1,
+      });
+      const multiple = await captured.execute("tc-multiple-session-ids", {
+        query: "legacy-session-id-needle",
+        limit: 2,
+      });
+
+      assert.match(single.content[0].text, /session_id: legacy-session-2/);
+      assert.doesNotMatch(single.content[0].text, /session_id: legacy-session-1/);
+      assert.match(multiple.content[0].text, /session_id: legacy-session-1/);
+      assert.match(multiple.content[0].text, /session_id: legacy-session-2/);
+      assert.strictEqual((multiple.content[0].text.match(/session_id:/g) ?? []).length, 2);
+    } finally {
+      dbManager.close();
+    }
   });
 
   it("clamps negative and fractional legacy limits before querying", async () => {
@@ -287,6 +333,7 @@ describe("registerSessionSearchTool", () => {
       assert.strictEqual(result.details.count, 0);
       assert.ok(output.length <= 50 * 1024, `expected <= 50 KiB, got ${output.length}`);
       assert.strictEqual(output.includes(query), false);
+      assert.doesNotMatch(output, /session_id:/);
       assert.ok(JSON.stringify(result.details).length < 1_000);
     } finally {
       dbManager.close();
@@ -318,13 +365,14 @@ describe("registerSessionSearchTool", () => {
     assert.match(captured.description, /any requires at least one listed term/);
     assert.match(captured.description, /exclude removes matching ranges/);
     assert.match(captured.description, /Output is plain text: count, optional message/);
-    assert.match(captured.description, /path:startLine-endLine with a short reason/);
+    assert.match(captured.description, /path:startLine-endLine with the session_id when available and a short reason/);
     assert.match(captured.description, /Example:\nfrom: 2026-05-14/);
     assert.match(captured.promptGuidelines.join("\n"), /Use all for required terms/);
 
     const empty = await captured.execute("tc-1", { markdown: "" });
     assert.strictEqual(empty.details.success, false);
     assert.strictEqual(empty.details.message, "markdown is required");
+    assert.doesNotMatch(empty.content[0].text, /session_id:/);
 
     const result = await captured.execute("tc-2", { markdown: "any:\n- needle" });
     assert.strictEqual(result.details.success, true);
@@ -337,9 +385,32 @@ describe("registerSessionSearchTool", () => {
     })), [{ path: filePath, startLine: 1, endLine: 1, reason: "matched any: needle" }]);
     assert.strictEqual(result.details.output, result.content[0].text);
     assert.match(result.content[0].text, /^count: 1\nanchors:\n-/);
-    assert.match(result.content[0].text, new RegExp(`${filePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:1-1 — matched any: needle`));
+    assert.match(result.content[0].text, new RegExp(`${filePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:1-1 — session_id: session-1; matched any: needle`));
     assert.doesNotMatch(result.content[0].text, /"ranges"/);
     assert.doesNotMatch(result.content[0].text, /"startLine"/);
     assert.doesNotMatch(result.content[0].text, /"sessionId"/);
+  });
+
+  it("omits session_id from anchor output when the source does not provide one", async () => {
+    let captured: any;
+    const mockPi = {
+      registerTool: (def: any) => { captured = def; },
+    } as any;
+    const sessionsDir = makeSessionsDir();
+    const filePath = path.join(sessionsDir, "session-without-id.jsonl");
+    fs.writeFileSync(filePath, `${JSON.stringify({
+      type: "message",
+      timestamp: "2026-05-15T10:00:00.000Z",
+      cwd: "/work/project",
+      message: { role: "user", content: "needle" },
+    })}\n`);
+
+    registerSessionSearchTool(mockPi, {} as any, { variant: "anchors" }, { sessionsDir });
+    const result = await captured.execute("tc-missing-session-id", { markdown: "any:\n- needle" });
+
+    assert.strictEqual(result.details.success, true);
+    assert.match(result.content[0].text, /matched any: needle/);
+    assert.doesNotMatch(result.content[0].text, /session_id:/);
+    assert.doesNotMatch(result.content[0].text, /undefined/);
   });
 });
