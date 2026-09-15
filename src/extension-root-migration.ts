@@ -6,6 +6,7 @@ import { AtomicLockCoordinator, type AtomicLockLease } from "./store/atomic-lock
 import { canonicalStoragePathSync } from "./store/canonical-storage-path.js";
 import { createRequire } from "node:module";
 import { isBunRuntime, loadBetterSqlite3 } from "./store/sqlite-native.js";
+import { publishFile, type FileIdentity } from "./store/publish-file.js";
 
 type MigrationDatabase = {
   exec: (sql: string) => void;
@@ -212,6 +213,25 @@ async function stageDatabaseSnapshot(
   }
 }
 
+async function hasInvalidDatabaseHeader(source: string): Promise<boolean> {
+  // Even a read-only SQLite connection can rewrite SHM. Check obvious header
+  // corruption without opening SQLite so raw recovery files stay untouched.
+  const handle = await fs.open(source, "r");
+  try {
+    const header = Buffer.alloc(16);
+    let offset = 0;
+    while (offset < header.length) {
+      const { bytesRead } = await handle.read(header, offset, header.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    // SQLite accepts an empty file as a new, empty database.
+    return offset > 0 && (offset !== header.length || !header.equals(Buffer.from("SQLite format 3\0")));
+  } finally {
+    await handle.close();
+  }
+}
+
 function isDatabaseCorruption(error: unknown): boolean {
   const code = typeof error === "object" && error && "code" in error
     ? String((error as { code?: unknown }).code)
@@ -283,20 +303,15 @@ async function restoreDatabaseGeneration(names: string[], holdingRoot: string, s
   const failures: string[] = [];
   for (const name of [...names].reverse()) {
     const held = path.join(holdingRoot, name);
-    if (!await pathEntryExists(held)) continue;
     try {
-      await fs.link(held, path.join(sourceRoot, name));
+      if (!await pathEntryExists(held)) continue;
+      await publishDatabaseFile(held, path.join(sourceRoot, name));
       await fs.unlink(held);
     } catch (error) {
       failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return failures;
-}
-
-interface FileIdentity {
-  dev: number;
-  ino: number;
 }
 
 async function fileIdentity(filePath: string): Promise<FileIdentity> {
@@ -370,19 +385,19 @@ async function moveDirContents(
   }
 }
 
-async function publishDatabaseFile(source: string, target: string): Promise<void> {
+async function publishDatabaseFile(source: string, target: string): Promise<FileIdentity> {
   if ((await fs.lstat(source)).isSymbolicLink()) {
     await fs.symlink(await fs.readlink(source), target);
-    return;
+    return fileIdentity(target);
   }
-  await fs.link(source, target);
+  return publishFile(source, target);
 }
 
 async function migrateDatabaseGeneration(
   legacyRoot: string,
   targetRoot: string,
   result: ExtensionRootMigrationResult,
-  publish: (source: string, target: string) => Promise<void>,
+  publish: (source: string, target: string) => Promise<FileIdentity | void>,
   retire: (source: string, target: string) => Promise<void>,
   backup: (source: string, staged: string, onProgress?: () => void) => Promise<void>,
   onBackupProgress?: () => void,
@@ -409,12 +424,12 @@ async function migrateDatabaseGeneration(
   const targetNames = await databaseFilesAt(targetRoot);
   if (sourceNames.length === 0) {
     if (!hadPendingMarker) return;
-    if (targetNames.includes("sessions.db")) {
+    const retirementDirs = (await fs.readdir(legacyRoot))
+      .filter((name) => name.startsWith(".sessions-db-retirement-"));
+    if (targetNames.includes("sessions.db") && retirementDirs.length === 0) {
       await fs.unlink(pendingMarker);
       return;
     }
-    const retirementDirs = (await fs.readdir(legacyRoot))
-      .filter((name) => name.startsWith(".sessions-db-retirement-"));
     const message = retirementDirs.length > 0
       ? `an interrupted migration preserved recovery artifacts at ${retirementDirs.map((name) => path.join(legacyRoot, name)).join(", ")}`
       : "an interrupted migration has no complete source or destination SQLite generation";
@@ -479,6 +494,9 @@ async function migrateDatabaseGeneration(
     const staged = path.join(stagingDir, "sessions.db");
     const sourceState = await fs.lstat(source);
     try {
+      if ((sourceState.isFile() || sourceState.isSymbolicLink()) && await hasInvalidDatabaseHeader(source)) {
+        throw Object.assign(new Error("file is not a database"), { code: "SQLITE_NOTADB" });
+      }
       writeLock = new (getDatabaseCtor())(source, { fileMustExist: true, timeout: 0 });
       writeLock.pragma("busy_timeout = 0");
       writeLock.exec("BEGIN IMMEDIATE");
@@ -517,8 +535,8 @@ async function migrateDatabaseGeneration(
         }
         for (const name of retired) {
           const target = path.join(targetRoot, name);
-          await publish(path.join(retirementDir, name), target);
-          published.set(target, await fileIdentity(target));
+          const identity = await publish(path.join(retirementDir, name), target);
+          published.set(target, identity ?? await fileIdentity(target));
         }
       }
     } else {
@@ -533,8 +551,8 @@ async function migrateDatabaseGeneration(
         throw error;
       }
       const target = path.join(targetRoot, "sessions.db");
-      await publish(staged, target);
-      published.set(target, await fileIdentity(target));
+      const identity = await publish(staged, target);
+      published.set(target, identity ?? await fileIdentity(target));
     }
 
     if (writeLock) {
@@ -548,26 +566,40 @@ async function migrateDatabaseGeneration(
     }
     result.moved += generationNames.length;
   } catch (error) {
+    // Keep recovery data until rollback has positively established what is
+    // safe to remove, including when inspecting a recovery path itself fails.
+    keepPendingMarker = true;
+    preserveRetirement = retired.length > 0;
     for (const [target, identity] of [...published.entries()].reverse()) {
       try { await unlinkIfOwned(target, identity); } catch {}
     }
+    // Release the SQLite transaction and connection before copying the held
+    // generation back. This matters on filesystems where restoration falls
+    // back from hard-link publication to an ordinary file copy.
     let restoreFailures: string[] = [];
-    if (retired.length > 0) {
-      restoreFailures = await restoreDatabaseGeneration(retired, retirementDir, legacyRoot);
-      preserveRetirement = restoreFailures.length > 0;
-      keepPendingMarker = preserveRetirement;
-    }
-    const destinationPreserved = await pathEntryExists(path.join(targetRoot, "sessions.db"));
-    if (destinationPreserved) keepPendingMarker = true;
     if (writeLock) {
       try { writeLock.exec("ROLLBACK"); } catch {}
+      try {
+        writeLock.close();
+        writeLock = null;
+      } catch (closeError) {
+        restoreFailures.push(`could not close SQLite before restoring files: ${String(closeError)}`);
+      }
     }
+    if (retired.length > 0) {
+      if (restoreFailures.length === 0) {
+        restoreFailures = await restoreDatabaseGeneration(retired, retirementDir, legacyRoot);
+      }
+      preserveRetirement = restoreFailures.length > 0;
+    }
+    const destinationPreserved = (await databaseFilesAt(targetRoot)).length > 0;
+    keepPendingMarker = preserveRetirement || destinationPreserved;
     const baseMessage = error instanceof Error ? error.message : String(error);
     let message = restoreFailures.length > 0
       ? `${baseMessage}; recovery artifacts preserved at ${retirementDir} (${restoreFailures.join("; ")})`
       : baseMessage;
     if (destinationPreserved) {
-      message += `; an unowned destination generation was preserved at ${path.join(targetRoot, "sessions.db")}`;
+      message += `; unowned destination generation files were preserved at ${targetRoot}`;
     }
     result.warnings.push(`${path.join(legacyRoot, "sessions.db")}: ${message}`);
     result.criticalFailures.push({
