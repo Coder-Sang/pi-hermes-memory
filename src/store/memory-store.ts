@@ -7,7 +7,7 @@
  * - Two stores: MEMORY.md (agent notes) and USER.md (user profile)
  * - §-delimited entries with character limits
  * - Frozen snapshot at load time for system prompt (preserves Pi's prompt cache)
- * - Atomic writes via temp file + fs.rename()
+ * - Temp-file publication via rename or hard link, with exclusive-copy fallback
  * - Content scanning before any write
  */
 
@@ -37,6 +37,7 @@ import type {
 } from "../types.js";
 import { AGENT_ROOT } from "../paths.js";
 import { canonicalMarkdownIdentity, withMarkdownMutationLock } from "./markdown-mutation-lock.js";
+import { publishFile, type FileIdentity } from "./publish-file.js";
 
 const MAX_EXTERNAL_WRITE_RETRIES = 2;
 const RECOVERY_ACTIVE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -881,7 +882,14 @@ export class MemoryStore {
           const state = await this.readFileState(storagePath);
           this.setEntries(target, [...new Set(state.entries)]);
           this.fileFingerprints[storagePath] = state.fingerprint;
-          if (!(error instanceof ExternalMemoryWriteConflict)) throw error;
+          if (!(error instanceof ExternalMemoryWriteConflict)) {
+            // A failed publication or rollback may still have changed disk.
+            // Reconcile observers while preserving the original I/O failure.
+            if (this.mutationObserver) {
+              try { await this.mutationObserver(target, [...state.entries]); } catch {}
+            }
+            throw error;
+          }
           if (attempt >= MAX_EXTERNAL_WRITE_RETRIES) {
             return await this.finalizeTargetMutation(target, storagePath, {
               success: false,
@@ -894,10 +902,10 @@ export class MemoryStore {
   }
 
   /**
-   * Atomic write: temp file + fs.rename().
-   * Creates temp files in the same directory as the target to avoid
-   * cross-device rename errors (EXDEV) when os.tmpdir() is on a different
-   * drive than the memory directory (common on Windows).
+   * Publish a staged file using rename when reusing a recovery snapshot, or
+   * exclusive publication after preserving the displaced file. Publication
+   * prefers an atomic hard link; its copy fallback may expose partial content.
+   * Temp files stay beside the target so rename stays on the same device.
    */
   private async saveToDisk(target: "memory" | "user" | "failure"): Promise<void> {
     const filePath = await this.resolveStoragePath(target);
@@ -919,7 +927,7 @@ export class MemoryStore {
 
       if (expectedFingerprint === "missing") {
         try {
-          await fs.link(tmpPath, filePath);
+          await publishFile(tmpPath, filePath);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "EEXIST") {
             throw new ExternalMemoryWriteConflict();
@@ -937,7 +945,6 @@ export class MemoryStore {
         }
       } else {
         const recoveryPath = this.recoveryPathFor(filePath);
-        const publishedIdentity = await this.fileIdentity(tmpPath);
         try {
           await fs.rename(filePath, recoveryPath);
         } catch (error) {
@@ -946,15 +953,14 @@ export class MemoryStore {
           }
           throw error;
         }
-        let published = false;
+        let publishedIdentity: FileIdentity | undefined;
         try {
           const displacedState = await this.readFileState(recoveryPath);
           if (displacedState.fingerprint !== expectedFingerprint) {
             throw new ExternalMemoryWriteConflict();
           }
 
-          await fs.link(tmpPath, filePath);
-          published = true;
+          publishedIdentity = await publishFile(tmpPath, filePath);
 
           const verifiedDisplacedState = await this.readFileState(recoveryPath);
           if (verifiedDisplacedState.fingerprint !== expectedFingerprint) {
@@ -962,7 +968,7 @@ export class MemoryStore {
           }
         } catch (error) {
           let rollbackError: unknown;
-          if (published) {
+          if (publishedIdentity) {
             try {
               await this.preserveConflictFile(tmpPath, filePath, "local");
             } catch {
@@ -991,7 +997,7 @@ export class MemoryStore {
       try { await this.unlinkPublishedTempLink(tmpPath); } catch { /* ignore */ }
 
       // Re-read after publish. An external truncate/cp can land between the
-      // link/rename and returning success; treat that as a write conflict so
+      // link/copy/rename and returning success; treat that as a write conflict so
       // the caller retries against disk truth instead of reporting phantom state.
       const publishedFingerprint = this.fingerprint(content);
       this.fileFingerprints[filePath] = publishedFingerprint;
@@ -1014,7 +1020,7 @@ export class MemoryStore {
 
   private async restoreDisplacedFile(displacedPath: string, filePath: string): Promise<void> {
     try {
-      await fs.link(displacedPath, filePath);
+      await publishFile(displacedPath, filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
@@ -1056,7 +1062,7 @@ export class MemoryStore {
     }
 
     try {
-      await fs.link(conflictPath, filePath);
+      await publishFile(conflictPath, filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
