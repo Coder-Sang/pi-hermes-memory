@@ -366,6 +366,7 @@ Search behavior notes:
 - Exact phrases can be requested with quotes, for example `"memory search"`.
 - Advanced FTS queries with operators like `OR` still work when you need them.
 - FTS5 uses the trigram tokenizer so pure CJK substrings are searchable; one- and two-character `memory_search` queries do not match the trigram index.
+- Each `session_search` result includes its `session_id`, allowing the agent to identify and reference the exact source session.
 
 Session history is indexed automatically during the active session and on session shutdown. Startup also runs a bounded incremental backfill for missed sessions: it compares stored file metadata and only parses files without matching metadata, capped per startup. To bulk-import existing sessions manually:
 
@@ -373,7 +374,7 @@ Session history is indexed automatically during the active session and on sessio
 /memory-index-sessions
 ```
 
-For users who prefer source anchors over snippets, `sessionSearch.variant` can be set to `anchors`. In that opt-in mode, the same `session_search` tool reads session JSONL files directly and accepts a Markdown request with fields such as `from`, `to`, `cwd`, and `limit`, plus `all`, `any`, and `exclude` lists. It returns plain text with `count`, an optional `message`, and compact `path:startLine-endLine` style anchors with short reasons instead of summaries or previews.
+For users who prefer source anchors over snippets, `sessionSearch.variant` can be set to `anchors`. In that opt-in mode, the same `session_search` tool reads session JSONL files directly and accepts a Markdown request with fields such as `from`, `to`, `cwd`, and `limit`, plus `all`, `any`, and `exclude` lists. It returns plain text with `count`, an optional `message`, and compact `path:startLine-endLine` style anchors with `session_id` values (when available) and short reasons instead of summaries or previews.
 
 ### Extended Memory Store
 

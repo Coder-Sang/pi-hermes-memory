@@ -69,7 +69,7 @@ function registerAnchorSessionSearchTool(pi: ExtensionAPI, sessionsDir: string):
     label: 'Session Search',
     description: `Search Pi session JSONL files in the opt-in anchor mode using a Markdown request.
 
-This mode accepts only a markdown request. Supported scalar fields are from, to, cwd, and limit. Supported list sections are all, any, and exclude: all terms must match, any requires at least one listed term, and exclude removes matching ranges. It returns compact JSONL line-range anchors, not summaries or previews. Output is plain text: count, optional message, then anchors as path:startLine-endLine with a short reason.
+This mode accepts only a markdown request. Supported scalar fields are from, to, cwd, and limit. Supported list sections are all, any, and exclude: all terms must match, any requires at least one listed term, and exclude removes matching ranges. It returns compact JSONL line-range anchors, not summaries or previews. Output is plain text: count, optional message, then anchors as path:startLine-endLine with the session_id when available and a short reason.
 
 Example:
 from: 2026-05-14
@@ -131,7 +131,11 @@ function formatAnchorSearchOutput(searchResult: SessionAnchorSearchResult): stri
     for (const range of searchResult.ranges) {
       const anchor = `${range.path}:${range.startLine}-${range.endLine}`;
       const reason = compactReason(range.reason);
-      lines.push(reason ? `- ${anchor} — ${reason}` : `- ${anchor}`);
+      const metadata = [
+        range.sessionId ? `session_id: ${range.sessionId}` : "",
+        reason,
+      ].filter(Boolean);
+      lines.push(metadata.length > 0 ? `- ${anchor} — ${metadata.join("; ")}` : `- ${anchor}`);
     }
   }
   return lines.join("\n");
@@ -154,7 +158,7 @@ Examples:
 - "Find the PR where we fixed the test hang"
 - "What approach did we take for the database migration?"
 
-Returns bounded conversation snippets with session dates and project context. Large messages are truncated with their original character count.`,
+Returns bounded conversation snippets with session IDs, dates, and project context. Large messages are truncated with their original character count.`,
     promptSnippet: 'Search past conversations for relevant context',
     promptGuidelines: [
       'Use session_search when the user asks about previous discussions or past work.',
@@ -226,7 +230,7 @@ Returns bounded conversation snippets with session dates and project context. La
         if (snippet.truncated) truncatedCount += 1;
         blocks.push([
           '---',
-          `📅 ${date} | 📁 ${r.project} | ${r.role === 'user' ? '👤 User' : '🤖 Assistant'}`,
+          `📅 ${date} | 📁 ${r.project} | ${r.role === 'user' ? '👤 User' : '🤖 Assistant'} | session_id: ${r.sessionId}`,
           snippet.text,
         ].join('\n'));
       }
