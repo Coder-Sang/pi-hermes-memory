@@ -6,7 +6,10 @@ import { AtomicLockCoordinator, type AtomicLockLease } from "./store/atomic-lock
 import { canonicalStoragePathSync } from "./store/canonical-storage-path.js";
 import { createRequire } from "node:module";
 import { isBunRuntime, loadBetterSqlite3 } from "./store/sqlite-native.js";
-import { publishFile, type FileIdentity } from "./store/publish-file.js";
+import {
+  publishFile, readFileSnapshot, verifyFileSnapshot, removePublishedFile,
+  preservedFilePaths, PUBLICATION_RECOVERY_PREFIX, type FileIdentity, type FileSnapshot,
+} from "./store/publish-file.js";
 
 type MigrationDatabase = {
   exec: (sql: string) => void;
@@ -299,33 +302,51 @@ async function moveDatabaseGeneration(
   }
 }
 
-async function restoreDatabaseGeneration(names: string[], holdingRoot: string, sourceRoot: string): Promise<string[]> {
+async function restoreDatabaseGeneration(
+  names: string[], holdingRoot: string, sourceRoot: string, preserveSource: boolean,
+): Promise<string[]> {
   const failures: string[] = [];
-  for (const name of [...names].reverse()) {
-    const held = path.join(holdingRoot, name);
-    try {
-      if (!await pathEntryExists(held)) continue;
-      await publishDatabaseFile(held, path.join(sourceRoot, name));
-      await fs.unlink(held);
-    } catch (error) {
-      failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
-    }
+  const restored = new Map<string, FileSnapshot>();
+  const heldFiles: string[] = [];
+  let stagingDir: string;
+  try {
+    stagingDir = await fs.mkdtemp(path.join(holdingRoot, ".restore-"));
+  } catch (error) {
+    return [`could not stage restoration: ${String(error)}`];
   }
-  return failures;
+  try {
+    for (const name of [...names].reverse()) {
+      const held = path.join(holdingRoot, name);
+      try {
+        if (!await pathEntryExists(held)) continue;
+        const staged = path.join(stagingDir, name);
+        const source = (await fs.lstat(held)).isSymbolicLink() ? held : staged;
+        if (source === staged) await stageRecoveryCopy(held, staged);
+        await publishVerifiedDatabaseFile(source, path.join(sourceRoot, name), publishDatabaseFile, restored);
+        heldFiles.push(held);
+      } catch (error) {
+        failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (failures.length === 0) {
+      try {
+        for (const [target, snapshot] of restored) await verifyFileSnapshot(target, snapshot);
+        if (!preserveSource) {
+          for (const held of heldFiles) await fs.unlink(held);
+        }
+      } catch (error) {
+        failures.push(`restoration verification or cleanup failed: ${String(error)}`);
+      }
+    }
+    return failures;
+  } finally {
+    try { await fs.rm(stagingDir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 async function fileIdentity(filePath: string): Promise<FileIdentity> {
   const stat = await fs.lstat(filePath);
   return { dev: stat.dev, ino: stat.ino };
-}
-
-async function unlinkIfOwned(filePath: string, identity: FileIdentity): Promise<void> {
-  try {
-    const current = await fileIdentity(filePath);
-    if (current.dev === identity.dev && current.ino === identity.ino) await fs.unlink(filePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
 }
 
 async function stageDatabaseSymlink(source: string, staged: string): Promise<void> {
@@ -393,6 +414,31 @@ async function publishDatabaseFile(source: string, target: string): Promise<File
   return publishFile(source, target);
 }
 
+async function publishVerifiedDatabaseFile(
+  source: string,
+  target: string,
+  publish: (source: string, target: string) => Promise<FileIdentity | void>,
+  published: Map<string, FileSnapshot>,
+): Promise<void> {
+  // Capture before publishing: a hard-linked destination can mutate the source
+  // inode too. Reading the expected digest afterwards would bless that mutation.
+  const expected = await readFileSnapshot(source);
+  const identity = await publish(source, target) ?? await fileIdentity(target);
+  const snapshot = { identity, content: expected.content };
+  // Register ownership before verification so a verification failure can still
+  // quarantine the destination and preserve unexpected contents on rollback.
+  published.set(target, snapshot);
+  await verifyFileSnapshot(target, snapshot);
+}
+
+async function stageRecoveryCopy(source: string, staged: string): Promise<void> {
+  // Keep original recovery bytes independent of the published inode, including
+  // on filesystems where publication succeeds via a hard link.
+  const expected = await readFileSnapshot(source);
+  await fs.copyFile(source, staged, fs.constants.COPYFILE_EXCL);
+  await verifyFileSnapshot(staged, { identity: await fileIdentity(staged), content: expected.content });
+}
+
 async function migrateDatabaseGeneration(
   legacyRoot: string,
   targetRoot: string,
@@ -422,6 +468,20 @@ async function migrateDatabaseGeneration(
   const hadPendingMarker = await pathEntryExists(pendingMarker);
   const sourceNames = await databaseFilesAt(legacyRoot);
   const targetNames = await databaseFilesAt(targetRoot);
+  if (hadPendingMarker) {
+    const recoveryDirs = (await Promise.all([legacyRoot, targetRoot].map(async (root) =>
+      (await fs.readdir(root)).filter((name) => name.startsWith(PUBLICATION_RECOVERY_PREFIX)
+        || (root === legacyRoot && name.startsWith(".sessions-db-retirement-")))
+        .map((name) => path.join(root, name)),
+    ))).flat();
+    if (recoveryDirs.length > 0) {
+      const message = `an interrupted migration preserved recovery artifacts at ${recoveryDirs.join(", ")}; manual recovery is required`;
+      result.warnings.push(message);
+      result.criticalFailures.push({ name: "sessions.db", source: path.join(legacyRoot, "sessions.db"),
+        target: path.join(targetRoot, "sessions.db"), message });
+      return;
+    }
+  }
   if (sourceNames.length === 0) {
     if (!hadPendingMarker) return;
     const retirementDirs = (await fs.readdir(legacyRoot))
@@ -476,7 +536,7 @@ async function migrateDatabaseGeneration(
   await fs.mkdir(targetRoot, { recursive: true });
   const stagingDir = path.join(targetRoot, `.sessions-db-migration-${randomUUID()}`);
   const retirementDir = path.join(legacyRoot, `.sessions-db-retirement-${randomUUID()}`);
-  const published = new Map<string, FileIdentity>();
+  const published = new Map<string, FileSnapshot>();
   let retired: string[] = [];
   let preserveRetirement = false;
   let keepPendingMarker = false;
@@ -535,8 +595,9 @@ async function migrateDatabaseGeneration(
         }
         for (const name of retired) {
           const target = path.join(targetRoot, name);
-          const identity = await publish(path.join(retirementDir, name), target);
-          published.set(target, identity ?? await fileIdentity(target));
+          const stagedFile = path.join(stagingDir, name);
+          await stageRecoveryCopy(path.join(retirementDir, name), stagedFile);
+          await publishVerifiedDatabaseFile(stagedFile, target, publish, published);
         }
       }
     } else {
@@ -551,8 +612,7 @@ async function migrateDatabaseGeneration(
         throw error;
       }
       const target = path.join(targetRoot, "sessions.db");
-      const identity = await publish(staged, target);
-      published.set(target, identity ?? await fileIdentity(target));
+      await publishVerifiedDatabaseFile(staged, target, publish, published);
     }
 
     if (writeLock) {
@@ -561,18 +621,32 @@ async function migrateDatabaseGeneration(
       // exists at this path. bun:sqlite reports SQLITE_IOERR here where
       // better-sqlite3 succeeds; either way a failed cleanup COMMIT must not
       // roll back an otherwise completed migration.
-      // The connection is closed in `finally` either way.
+      // Close before final verification so connection cleanup cannot change
+      // generation files after we have accepted their contents.
       try { writeLock.exec("COMMIT"); } catch {}
+      writeLock.close();
+      writeLock = null;
     }
+    // Earlier sidecars may change while later files are being published. The
+    // whole generation must match before deleting any of its recovery sources.
+    for (const [target, snapshot] of published) await verifyFileSnapshot(target, snapshot);
     result.moved += generationNames.length;
   } catch (error) {
     // Keep recovery data until rollback has positively established what is
     // safe to remove, including when inspecting a recovery path itself fails.
     keepPendingMarker = true;
     preserveRetirement = retired.length > 0;
-    for (const [target, identity] of [...published.entries()].reverse()) {
-      try { await unlinkIfOwned(target, identity); } catch {}
+    const preservedPaths = new Set(preservedFilePaths(error));
+    const cleanupFailures: string[] = [];
+    for (const [target, snapshot] of [...published.entries()].reverse()) {
+      try {
+        await removePublishedFile(target, snapshot);
+      } catch (cleanupError) {
+        cleanupFailures.push(String(cleanupError));
+        for (const file of preservedFilePaths(cleanupError)) preservedPaths.add(file);
+      }
     }
+    const unresolvedConflict = preservedPaths.size > 0 || cleanupFailures.length > 0;
     // Release the SQLite transaction and connection before copying the held
     // generation back. This matters on filesystems where restoration falls
     // back from hard-link publication to an ordinary file copy.
@@ -588,12 +662,12 @@ async function migrateDatabaseGeneration(
     }
     if (retired.length > 0) {
       if (restoreFailures.length === 0) {
-        restoreFailures = await restoreDatabaseGeneration(retired, retirementDir, legacyRoot);
+        restoreFailures = await restoreDatabaseGeneration(retired, retirementDir, legacyRoot, unresolvedConflict);
       }
-      preserveRetirement = restoreFailures.length > 0;
+      preserveRetirement = restoreFailures.length > 0 || unresolvedConflict;
     }
     const destinationPreserved = (await databaseFilesAt(targetRoot)).length > 0;
-    keepPendingMarker = preserveRetirement || destinationPreserved;
+    keepPendingMarker = preserveRetirement || destinationPreserved || unresolvedConflict;
     const baseMessage = error instanceof Error ? error.message : String(error);
     let message = restoreFailures.length > 0
       ? `${baseMessage}; recovery artifacts preserved at ${retirementDir} (${restoreFailures.join("; ")})`
@@ -601,6 +675,9 @@ async function migrateDatabaseGeneration(
     if (destinationPreserved) {
       message += `; unowned destination generation files were preserved at ${targetRoot}`;
     }
+    if (cleanupFailures.length > 0) message += `; ${cleanupFailures.join("; ")}`;
+    if (preservedPaths.size > 0) message += `; recovery files preserved at ${[...preservedPaths].join(", ")}`;
+    if (preserveRetirement && restoreFailures.length === 0) message += `; original recovery artifacts preserved at ${retirementDir}`;
     result.warnings.push(`${path.join(legacyRoot, "sessions.db")}: ${message}`);
     result.criticalFailures.push({
       name: "sessions.db",

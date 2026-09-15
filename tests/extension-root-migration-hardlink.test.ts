@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import { migrateExtensionRoot, isDatabaseMigrationPending } from "../src/extension-root-migration.js";
 
 const ioError = (code: string) => Object.assign(new Error(`injected ${code}`), { code });
+const nativeLink = fs.link;
 let root: string;
 let legacy: string;
 let target: string;
@@ -315,4 +316,148 @@ describe("extension-root migration without hard links", () => {
       assertDatabase(directory);
     });
   }
+
+  for (const mode of ["truncate", "same-size", "append"]) {
+    for (const injectedPublisher of [false, true]) {
+      it(`rejects ${mode} edits without losing the original (custom publisher=${injectedPublisher})`, async (t) => {
+        seedDatabase();
+        const seed = new Database(path.join(legacy, "sessions.db"));
+        seed.exec("CREATE TABLE padding (value BLOB); INSERT INTO padding VALUES (zeroblob(400000))");
+        seed.close();
+        const destination = path.join(target, "sessions.db");
+        const open = fs.open;
+        let edited = false;
+        const edit = async () => {
+          if (edited) return;
+          edited = true;
+          if (mode === "truncate") await fs.writeFile(destination, "external rewrite");
+          else if (mode === "append") await fs.appendFile(destination, "external suffix");
+          else {
+            const handle = await open(destination, "r+");
+            try { await handle.write(Buffer.from("external rewrite"), 0, 16, 0); }
+            finally { await handle.close(); }
+          }
+        };
+        if (!injectedPublisher) {
+          t.mock.method(fs, "open", async (file, ...args) => {
+            const handle = await open(file, ...args);
+            if (file === destination && args[0] === "wx") {
+              const write = handle.write.bind(handle);
+              t.mock.method(handle, "write", async (...writeArgs) => {
+                const result = await write(...writeArgs);
+                // Appending after the full copy prevents later chunks from
+                // legitimately replacing the injected suffix.
+                if (mode !== "append") await edit();
+                return result;
+              });
+              if (mode === "append") {
+                const close = handle.close.bind(handle);
+                t.mock.method(handle, "close", async () => { await close(); await edit(); });
+              }
+            }
+            return handle;
+          });
+        }
+        const result = await migrateExtensionRoot(legacy, target, injectedPublisher ? {
+          publishDatabaseFile: async (source, dest) => {
+            await fs.copyFile(source, dest, fs.constants.COPYFILE_EXCL);
+            await edit();
+          },
+        } : {});
+        assert.equal(edited, true);
+        assert.equal(result.moved, 0);
+        assert.equal(result.criticalFailures.length, 1);
+        assert.match(result.criticalFailures[0].message, /content changed/);
+        assert.match(result.criticalFailures[0].message, /\.publish-recovery-/);
+        assert.equal(isDatabaseMigrationPending(legacy, target), true);
+        assertDatabase(legacy);
+        const dirs = await retirementDirs();
+        assert.equal(dirs.length, 1);
+        assertDatabase(path.join(legacy, dirs[0]));
+        const retry = await migrateExtensionRoot(legacy, target);
+        assert.equal(retry.criticalFailures.length, 1);
+        assert.equal(isDatabaseMigrationPending(legacy, target), true);
+      });
+    }
+  }
+
+  for (const hardlinks of [false, true]) {
+    it(`rechecks earlier sidecars and retains independent recovery bytes (hard links=${hardlinks})`, async (t) => {
+      if (hardlinks) t.mock.method(fs, "link", nativeLink);
+      await fs.writeFile(path.join(legacy, "sessions.db"), "not sqlite");
+      await fs.writeFile(path.join(legacy, "sessions.db-wal"), "original wal");
+      const result = await migrateExtensionRoot(legacy, target, {
+        publishDatabaseFile: async (source, dest) => {
+          if (hardlinks) await fs.link(source, dest);
+          else await fs.copyFile(source, dest, fs.constants.COPYFILE_EXCL);
+          if (dest === path.join(target, "sessions.db")) {
+            await fs.writeFile(path.join(target, "sessions.db-wal"), "external wal");
+          }
+        },
+      });
+      assert.equal(result.criticalFailures.length, 1);
+      assert.match(result.criticalFailures[0].message, /content changed/);
+      assert.equal(await fs.readFile(path.join(target, "sessions.db-wal"), "utf8"), "external wal");
+      assert.equal(await fs.readFile(path.join(legacy, "sessions.db-wal"), "utf8"), "original wal");
+      const dirs = await retirementDirs();
+      assert.equal(await fs.readFile(path.join(legacy, dirs[0], "sessions.db-wal"), "utf8"), "original wal");
+      assert.equal(isDatabaseMigrationPending(legacy, target), true);
+    });
+  }
+
+  it("preserves an external successor created after rollback checks the isolated file", async (t) => {
+    await fs.writeFile(path.join(legacy, "sessions.db"), "not sqlite");
+    await fs.writeFile(path.join(legacy, "sessions.db-wal"), "original wal");
+    const lstat = fs.lstat;
+    let injected = false;
+    const result = await migrateExtensionRoot(legacy, target, {
+      publishDatabaseFile: async (source, dest) => {
+        if (dest === path.join(target, "sessions.db")) {
+          t.mock.method(fs, "lstat", async (file, ...args) => {
+            const state = await lstat(file, ...args);
+            if (!injected && String(file).includes(".publish-recovery-") && String(file).endsWith("sessions.db-wal")) {
+              injected = true;
+              await fs.writeFile(path.join(target, "sessions.db-wal"), "external successor");
+            }
+            return state;
+          });
+          throw ioError("ENOSPC");
+        }
+        await fs.copyFile(source, dest, fs.constants.COPYFILE_EXCL);
+      },
+    });
+    assert.equal(injected, true);
+    assert.equal(result.criticalFailures.length, 1);
+    assert.equal(await fs.readFile(path.join(target, "sessions.db-wal"), "utf8"), "external successor");
+    assert.equal(isDatabaseMigrationPending(legacy, target), true);
+    assert.equal(await fs.readFile(path.join(legacy, "sessions.db-wal"), "utf8"), "original wal");
+  });
+
+  it("verifies restored bytes before deleting recovery originals", async (t) => {
+    seedDatabase();
+    const original = await fs.readFile(path.join(legacy, "sessions.db"));
+    const open = fs.open;
+    let injected = false;
+    t.mock.method(fs, "open", async (file, ...args) => {
+      const handle = await open(file, ...args);
+      if (file === path.join(legacy, "sessions.db") && args[0] === "wx") {
+        const write = handle.write.bind(handle);
+        t.mock.method(handle, "write", async (...writeArgs) => {
+          const result = await write(...writeArgs);
+          if (!injected) { injected = true; await fs.writeFile(file, "external restoration edit"); }
+          return result;
+        });
+      }
+      return handle;
+    });
+    const result = await migrateExtensionRoot(legacy, target, {
+      publishDatabaseFile: async () => { throw ioError("ENOSPC"); },
+    });
+    assert.equal(injected, true);
+    assert.equal(result.criticalFailures.length, 1);
+    assert.match(result.criticalFailures[0].message, /content changed/);
+    const dirs = await retirementDirs();
+    assert.deepEqual(await fs.readFile(path.join(legacy, dirs[0], "sessions.db")), original);
+    assert.equal(isDatabaseMigrationPending(legacy, target), true);
+  });
 });

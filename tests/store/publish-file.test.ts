@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { publishFile } from "../../src/store/publish-file.js";
+import {
+  publishFile, readFileSnapshot, removePublishedFile, preservedFilePaths,
+} from "../../src/store/publish-file.js";
 
 const ioError = (code: string) => Object.assign(new Error(`injected ${code}`), { code });
 let root: string;
@@ -153,7 +155,7 @@ describe("publishFile", () => {
               if (failure === "cleanup-stat") {
                 const lstat = fs.lstat;
                 t.mock.method(fs, "lstat", async (file, ...args) => {
-                  if (file === target) throw ioError("EACCES");
+                  if (String(file).includes(".publish-recovery-")) throw ioError("EACCES");
                   return lstat(file, ...args);
                 });
               }
@@ -165,13 +167,16 @@ describe("publishFile", () => {
         }
         return handle;
       });
+      let retainedPaths: string[] = [];
       await assert.rejects(publishFile(source, target), (actual: any) => {
+        retainedPaths = preservedFilePaths(actual);
         assert.ok(actual === error || actual.cause === error || (failure === "zero-write" && actual.code === "EIO"));
         return true;
       });
       for (const handle of handles) assert.equal(handle.fd, -1, "every descriptor must be closed");
       if (["stat", "cleanup-stat", "unlink", "replaced"].includes(failure)) {
-        assert.ok(await fs.stat(target), "keep target when ownership/cleanup is uncertain");
+        const retained = await Promise.all(retainedPaths.map((file) => fs.stat(file).catch(() => null)));
+        assert.ok(retained.some(Boolean), "keep recovery data when ownership/cleanup is uncertain");
         if (failure === "replaced") assert.equal(await fs.readFile(target, "utf8"), "external successor");
       } else {
         await assert.rejects(fs.stat(target), { code: "ENOENT" });
@@ -197,5 +202,166 @@ describe("publishFile", () => {
     });
     await assert.rejects(publishFile(source, target), /replaced during copy/);
     assert.equal(await fs.readFile(target, "utf8"), "external successor");
+  });
+});
+
+describe("publication cleanup isolation", () => {
+  for (const change of ["rewrite", "replace"]) {
+    it(`rejects a file ${change} during fingerprinting`, async (t) => {
+      await fs.copyFile(source, target);
+      const open = fs.open;
+      let injected = false;
+      t.mock.method(fs, "open", async (file, ...args) => {
+        const handle = await open(file, ...args);
+        if (file === target && args[0] === "r") {
+          const read = handle.read.bind(handle);
+          t.mock.method(handle, "read", async (...readArgs) => {
+            const result = await read(...readArgs);
+            if (!injected) {
+              injected = true;
+              if (change === "replace") {
+                await fs.rename(target, path.join(root, "old-inode"));
+                await fs.copyFile(source, target);
+              } else {
+                const writer = await open(target, "r+");
+                try { await writer.write(Buffer.from("xyz"), 0, 3, 0); }
+                finally { await writer.close(); }
+              }
+            }
+            return result;
+          });
+        }
+        return handle;
+      });
+      await assert.rejects(readFileSnapshot(target), /File changed while/);
+      assert.equal(injected, true);
+    });
+  }
+
+  it("does not delete a successor created after the ownership check", async (t) => {
+    t.mock.method(fs, "link", async () => { throw ioError("ENOTSUP"); });
+    const open = fs.open;
+    let failed = false;
+    t.mock.method(fs, "open", async (file, ...args) => {
+      const handle = await open(file, ...args);
+      if (file === target && args[0] === "wx") {
+        const write = handle.write.bind(handle);
+        let count = 0;
+        t.mock.method(handle, "write", async (...writeArgs) => {
+          if (++count === 2) { failed = true; throw ioError("ENOSPC"); }
+          return write(...writeArgs);
+        });
+      }
+      return handle;
+    });
+    const lstat = fs.lstat;
+    let injected = false;
+    t.mock.method(fs, "lstat", async (file, ...args) => {
+      const state = await lstat(file, ...args);
+      if (failed && !injected && (file === target || String(file).includes(".publish-recovery-"))) {
+        injected = true;
+        if (file === target) await fs.rename(target, path.join(root, "old-partial"));
+        await fs.writeFile(target, "external successor");
+      }
+      return state;
+    });
+    await assert.rejects(publishFile(source, target), { code: "ENOSPC" });
+    assert.equal(injected, true);
+    assert.equal(await fs.readFile(target, "utf8"), "external successor");
+  });
+
+  for (const timing of ["before-isolation", "after-isolation", "before-delete"]) {
+    it(`preserves an external successor ${timing}`, async (t) => {
+      await fs.copyFile(source, target);
+      const snapshot = await readFileSnapshot(target);
+      let injected = false;
+      const rename = fs.rename;
+      const replace = async () => {
+        if (timing === "before-isolation") await rename(target, path.join(root, "owned"));
+        await fs.writeFile(target, "external successor");
+        injected = true;
+      };
+      t.mock.method(fs, "rename", async (from, to) => {
+        if (from === target && timing === "before-isolation") await replace();
+        await rename(from, to);
+        if (from === target && timing === "after-isolation") await replace();
+      });
+      const unlink = fs.unlink;
+      t.mock.method(fs, "unlink", async (file) => {
+        if (String(file).includes(".publish-recovery-") && timing === "before-delete") await replace();
+        return unlink(file);
+      });
+      if (timing === "before-isolation") {
+        await assert.rejects(removePublishedFile(target, snapshot), /recovery files preserved at/);
+      } else await removePublishedFile(target, snapshot);
+      assert.equal(injected, true);
+      assert.equal(await fs.readFile(target, "utf8"), "external successor");
+    });
+  }
+
+  for (const failure of ["occupied", "restore", "isolate", "inspect"]) {
+    it(`retains unrecognized contents when ${failure} prevents cleanup`, async (t) => {
+      await fs.copyFile(source, target);
+      const snapshot = await readFileSnapshot(target);
+      await fs.writeFile(target, "external edit on the same inode");
+      const rename = fs.rename;
+      t.mock.method(fs, "rename", async (from, to) => {
+        if (failure === "isolate") throw ioError("EACCES");
+        await rename(from, to);
+        if (from === target && failure === "occupied") await fs.writeFile(target, "new creator");
+      });
+      if (failure === "restore") t.mock.method(fs, "link", async () => { throw ioError("EACCES"); });
+      if (failure === "inspect") {
+        const lstat = fs.lstat;
+        t.mock.method(fs, "lstat", async (file, ...args) => {
+          if (String(file).includes(".publish-recovery-")) throw ioError("EACCES");
+          return lstat(file, ...args);
+        });
+      }
+      let retained: string[] = [];
+      await assert.rejects(removePublishedFile(target, snapshot), (error) => {
+        retained = preservedFilePaths(error);
+        return retained.length > 0;
+      });
+      const contents = await Promise.all(retained.map((file) => fs.readFile(file, "utf8").catch(() => "")));
+      assert.ok(contents.includes("external edit on the same inode"));
+      if (failure === "occupied") assert.equal(await fs.readFile(target, "utf8"), "new creator");
+    });
+  }
+
+  it("preserves uncertain partial writes without recursive restoration cleanup", async (t) => {
+    t.mock.method(fs, "link", async () => { throw ioError("ENOTSUP"); });
+    const open = fs.open;
+    let creations = 0;
+    t.mock.method(fs, "open", async (file, ...args) => {
+      const handle = await open(file, ...args);
+      if (file === target && args[0] === "wx") {
+        creations++;
+        const write = handle.write.bind(handle);
+        t.mock.method(handle, "write", async (buffer, offset, _length, position) => {
+          await write(buffer, offset, 20, position);
+          throw ioError("ENOSPC");
+        });
+      }
+      return handle;
+    });
+    let retained: string[] = [];
+    await assert.rejects(publishFile(source, target), (error) => {
+      retained = preservedFilePaths(error);
+      return retained.length > 0;
+    });
+    assert.equal(creations, 2, "one failed publication and one non-recursive restoration");
+    const contents = await Promise.all(retained.map((file) => fs.readFile(file).catch(() => null)));
+    assert.ok(contents.some((content) => content?.length === 20));
+  });
+
+  it("restores an unowned relative symlink without changing its meaning", async () => {
+    await fs.copyFile(source, target);
+    const snapshot = await readFileSnapshot(target);
+    await fs.unlink(target);
+    await fs.symlink("source", target);
+    await assert.rejects(removePublishedFile(target, snapshot), /recovery files preserved at/);
+    assert.equal(await fs.readlink(target), "source");
+    assert.deepEqual(await fs.readFile(target), await fs.readFile(source));
   });
 });
