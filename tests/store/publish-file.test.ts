@@ -31,7 +31,7 @@ describe("publishFile", () => {
     assert.deepEqual(await fs.readFile(target), await fs.readFile(source));
   });
 
-  for (const code of ["ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EPERM", "EXDEV"]) {
+  for (const code of ["ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EPERM", "EXDEV", "EMLINK"]) {
     it(`copies in chunks after ${code} and returns the target inode`, async (t) => {
       const link = t.mock.method(fs, "link", async () => { throw ioError(code); });
       const identity = await publishFile(source, target);
@@ -55,9 +55,9 @@ describe("publishFile", () => {
     });
   }
 
-  for (const fallback of [false, true]) {
-    it(`preserves an existing target (fallback=${fallback})`, async (t) => {
-      if (fallback) t.mock.method(fs, "link", async () => { throw ioError("ENOTSUP"); });
+  for (const fallbackCode of [undefined, "ENOTSUP", "EMLINK"]) {
+    it(`preserves an existing target (fallback=${fallbackCode ?? "none"})`, async (t) => {
+      if (fallbackCode) t.mock.method(fs, "link", async () => { throw ioError(fallbackCode); });
       await fs.writeFile(target, "external contents");
       await assert.rejects(publishFile(source, target), { code: "EEXIST" });
       assert.equal(await fs.readFile(target, "utf8"), "external contents");
@@ -76,18 +76,20 @@ describe("publishFile", () => {
     assert.deepEqual(await fs.readFile(target), await fs.readFile(winner));
   });
 
-  for (const code of ["EPERM", "EACCES", "EROFS", "ENOSPC"]) {
-    it(`propagates the fallback open error ${code} without retrying`, async (t) => {
-      const originalOpen = fs.open;
-      const error = ioError(code);
-      const link = t.mock.method(fs, "link", async () => { throw ioError("EPERM"); });
-      t.mock.method(fs, "open", async (file, ...args) => {
-        if (file === target) throw error;
-        return originalOpen(file, ...args);
+  for (const fallbackCode of ["EPERM", "EMLINK"]) {
+    for (const code of ["EPERM", "EACCES", "EROFS", "ENOSPC", "EMLINK"]) {
+      it(`propagates the fallback open error ${code} after ${fallbackCode} without retrying`, async (t) => {
+        const originalOpen = fs.open;
+        const error = ioError(code);
+        const link = t.mock.method(fs, "link", async () => { throw ioError(fallbackCode); });
+        t.mock.method(fs, "open", async (file, ...args) => {
+          if (file === target) throw error;
+          return originalOpen(file, ...args);
+        });
+        await assert.rejects(publishFile(source, target), (actual) => actual === error);
+        assert.equal(link.mock.callCount(), 1);
       });
-      await assert.rejects(publishFile(source, target), (actual) => actual === error);
-      assert.equal(link.mock.callCount(), 1);
-    });
+    }
   }
 
   it("handles short reads and short writes without losing bytes", async (t) => {

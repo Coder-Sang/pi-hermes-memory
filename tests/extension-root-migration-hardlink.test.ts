@@ -13,12 +13,11 @@ let root: string;
 let legacy: string;
 let target: string;
 
-beforeEach(async (t) => {
+beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "migration-hardlink-test-"));
   legacy = path.join(root, "legacy");
   target = path.join(root, "target");
   await fs.mkdir(legacy);
-  t.mock.method(fs, "link", async () => { throw ioError("ENOTSUP"); });
 });
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 
@@ -41,7 +40,11 @@ async function retirementDirs(): Promise<string[]> {
   return (await fs.readdir(legacy)).filter((name) => name.startsWith(".sessions-db-retirement-"));
 }
 
-describe("extension-root migration without hard links", () => {
+for (const fallbackCode of ["ENOTSUP", "EMLINK"]) describe(`extension-root migration after ${fallbackCode}`, () => {
+  beforeEach((t) => {
+    t.mock.method(fs, "link", async () => { throw ioError(fallbackCode); });
+  });
+
   it("migrates a consistent WAL snapshot and keeps the pending marker throughout copying", async (t) => {
     const source = new Database(path.join(legacy, "sessions.db"));
     try {
@@ -128,7 +131,7 @@ describe("extension-root migration without hard links", () => {
       assert.equal(existsSync(path.join(target, ".sessions-db-migration-pending")), false);
       assert.deepEqual(await retirementDirs(), []);
       t.mock.restoreAll();
-      t.mock.method(fs, "link", async () => { throw ioError("ENOTSUP"); });
+      t.mock.method(fs, "link", async () => { throw ioError(fallbackCode); });
       const retried = await migrateExtensionRoot(legacy, target);
       assert.deepEqual(retried.criticalFailures, []);
       assertDatabase(target);
@@ -159,7 +162,7 @@ describe("extension-root migration without hard links", () => {
         assert.equal(closed, true);
         assert.equal(rolledBack, true);
       }
-      throw ioError("ENOTSUP");
+      throw ioError(fallbackCode);
     });
     const result = await migrateExtensionRoot(legacy, target, {
       publishDatabaseFile: async () => { throw ioError("ENOSPC"); },

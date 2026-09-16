@@ -13,12 +13,11 @@ let root: string;
 let memoryDir: string;
 let store: MemoryStore;
 
-beforeEach(async (t) => {
+beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "memory-hardlink-test-"));
   memoryDir = path.join(root, "memory");
   store = new MemoryStore({ memoryDir, memoryMode: "policy-only", memoryCharLimit: 1000, userCharLimit: 1000 } as MemoryConfig);
   await store.loadFromDisk();
-  t.mock.method(fs, "link", async () => { throw ioError("ENOTSUP"); });
 });
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 
@@ -37,7 +36,11 @@ function failVerification(readNumber: number): void {
   };
 }
 
-describe("MemoryStore without hard links", () => {
+for (const fallbackCode of ["ENOTSUP", "EMLINK"]) describe(`MemoryStore after ${fallbackCode}`, () => {
+  beforeEach((t) => {
+    t.mock.method(fs, "link", async () => { throw ioError(fallbackCode); });
+  });
+
   for (const target of ["memory", "user", "failure"] as const) {
     it(`creates, appends, replaces and removes ${target}, observing final disk content`, async () => {
       const file = path.join(memoryDir, names[target]);
@@ -91,7 +94,7 @@ describe("MemoryStore without hard links", () => {
         injected = true;
         await fs.writeFile(target, "external creator");
       }
-      throw ioError("EPERM");
+      throw ioError(fallbackCode);
     });
     const result = await store.add("memory", "local addition");
     assert.equal(result.success, true);
@@ -149,7 +152,7 @@ describe("MemoryStore without hard links", () => {
     failVerification(2);
     t.mock.method(fs, "link", async (source) => {
       if (String(source).includes(".recovery-")) throw ioError("EACCES");
-      throw ioError("ENOTSUP");
+      throw ioError(fallbackCode);
     });
     await assert.rejects(store.add("memory", "failed addition"), { code: "EACCES" });
     await assert.rejects(fs.stat(file), { code: "ENOENT" });

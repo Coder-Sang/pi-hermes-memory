@@ -29,7 +29,7 @@ export function preservedFilePaths(error: unknown): string[] {
   return error instanceof PreservedFileError ? error.preservedPaths : [];
 }
 
-const LINK_FALLBACK_CODES = new Set(["ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EPERM", "EXDEV"]);
+const LINK_FALLBACK_CODES = new Set(["ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EPERM", "EXDEV", "EMLINK"]);
 const COPY_BUFFER_SIZE = 64 * 1024;
 
 function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
