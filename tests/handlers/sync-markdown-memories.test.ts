@@ -13,7 +13,7 @@ import {
 } from '../../src/handlers/sync-markdown-memories.js';
 import { ENTRY_DELIMITER } from '../../src/constants.js';
 import { addMemory, getMemories, reconcileMarkdownMemoryScope, searchMemories } from '../../src/store/sqlite-memory-store.js';
-import { AtomicLockCoordinator } from '../../src/store/atomic-lock-coordinator.js';
+import { FileLockCoordinator } from '../../src/store/file-lock-coordinator.js';
 import { MemoryStore } from '../../src/store/memory-store.js';
 
 async function withBlockedMemoryWrites<T>(dbManager: DatabaseManager, fn: () => T | Promise<T>): Promise<T> {
@@ -233,7 +233,7 @@ describe('memory sqlite sync + markdown backfill', () => {
     addMemory(dbManager, 'stale memory');
 
     const identity = fs.realpathSync(memoryFile);
-    const coordinator = new AtomicLockCoordinator(path.join(path.dirname(path.dirname(identity)), '.pi-hermes-locks.sqlite'));
+    const coordinator = new FileLockCoordinator(path.join(path.dirname(path.dirname(identity)), '.pi-hermes-locks'));
     const lease = coordinator.tryAcquire(`mutation:${identity}`, { staleMs: 300_000 });
     assert.ok(lease);
 

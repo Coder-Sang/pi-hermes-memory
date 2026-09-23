@@ -3,32 +3,34 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AtomicLockCoordinator } from "../../src/store/atomic-lock-coordinator.js";
-import { withMarkdownMutationLock } from "../../src/store/markdown-mutation-lock.js";
+import { acquireMarkdownMutationLock, withMarkdownMutationLock } from "../../src/store/markdown-mutation-lock.js";
 
 describe("markdown mutation lock", () => {
-  it("preserves a committed result and recovers release before the next acquire", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "markdown-lock-test-"));
-    const filePath = path.join(tmpDir, "memory", "MEMORY.md");
-    const prototype = AtomicLockCoordinator.prototype as any;
-    const originalDeleteOwnedLock = prototype.deleteOwnedLock;
-    let deleteAttempts = 0;
-    prototype.deleteOwnedLock = function (key: string, token: string): void {
-      deleteAttempts++;
-      if (deleteAttempts <= 3) throw new Error("injected release failure");
-      return originalDeleteOwnedLock.call(this, key, token);
-    };
-
+  it("preserves a committed result and releases before the next acquire", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "markdown-lock-test-"));
     try {
-      const first = await withMarkdownMutationLock(filePath, async () => "committed");
-      assert.equal(first, "committed");
-
-      const second = await withMarkdownMutationLock(filePath, async () => "next mutation");
-      assert.equal(second, "next mutation");
-      assert.ok(deleteAttempts >= 4);
+      const file = path.join(dir, "memory", "MEMORY.md");
+      assert.equal(await withMarkdownMutationLock(file, async () => "committed"), "committed");
+      assert.equal(await withMarkdownMutationLock(file, async () => "next mutation"), "next mutation");
     } finally {
-      prototype.deleteOwnedLock = originalDeleteOwnedLock;
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes another writer while the first holds its lease", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "markdown-lock-test-"));
+    try {
+      const file = path.join(dir, "memory", "MEMORY.md");
+      const first = await acquireMarkdownMutationLock(file);
+      let acquired = false;
+      const second = acquireMarkdownMutationLock(file).then((lease) => { acquired = true; lease.release(); });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(acquired, false);
+      first.release();
+      await second;
+      assert.equal(acquired, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -15,7 +15,7 @@ afterEach(() => {
 describe("loadConfig", () => {
   it("returns defaults when no config file exists", () => {
     const config = loadConfig(TEST_CONFIG_PATH);
-    assert.strictEqual(config.memoryMode, "policy-only");
+    assert.strictEqual(config.memoryMode, "legacy-inject");
     assert.strictEqual(config.lazyInitialization, false);
     assert.strictEqual(config.memoryPolicyStyle, "full");
     assert.strictEqual(config.memoryPolicyCustomText, undefined);
@@ -39,7 +39,7 @@ describe("loadConfig", () => {
     assert.strictEqual(config.failureInjectionMaxAgeDays, 7);
     assert.strictEqual(config.failureInjectionMaxEntries, 5);
     assert.strictEqual(config.projectsMemoryDir, "projects-memory");
-    assert.deepStrictEqual(config.sessionSearch, { variant: "legacy" });
+    assert.deepStrictEqual(config.sessionSearch, { variant: "anchors" });
     assert.strictEqual(config.llmModelOverride, undefined);
     assert.strictEqual(config.llmThinkingOverride, undefined);
     assert.strictEqual(config.standingInstructionsEnabled, true);
@@ -212,7 +212,7 @@ describe("loadConfig", () => {
     fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify({ reviewEnabled: false }));
     const config = loadConfig(TEST_CONFIG_PATH);
     assert.strictEqual(config.reviewEnabled, false);
-    assert.strictEqual(config.memoryMode, "policy-only");
+    assert.strictEqual(config.memoryMode, "legacy-inject");
     assert.strictEqual(config.memoryPolicyStyle, "full");
     assert.strictEqual(config.memoryCharLimit, 5000); // default
     assert.strictEqual(config.reviewRecentMessages, 0);
@@ -346,7 +346,7 @@ describe("loadConfig", () => {
     }));
     const config = loadConfig(TEST_CONFIG_PATH);
     assert.strictEqual(config.memoryCharLimit, 1000);
-    assert.strictEqual(config.memoryMode, "policy-only");
+    assert.strictEqual(config.memoryMode, "legacy-inject");
     assert.strictEqual(config.reviewEnabled, true);
   });
 
@@ -356,7 +356,7 @@ describe("loadConfig", () => {
       memoryMode: "invalid",
     }));
     const config = loadConfig(TEST_CONFIG_PATH);
-    assert.strictEqual(config.memoryMode, "policy-only");
+    assert.strictEqual(config.memoryMode, "legacy-inject");
   });
 
   it("accepts valid memoryPolicyStyle values", () => {
@@ -455,7 +455,7 @@ describe("loadConfig", () => {
       sessionSearch: { variant: "invalid" },
     }));
     const config = loadConfig(TEST_CONFIG_PATH);
-    assert.deepStrictEqual(config.sessionSearch, { variant: "legacy" });
+    assert.deepStrictEqual(config.sessionSearch, { variant: "anchors" });
   });
 
   it("ignores invalid memoryOverflowStrategy values", () => {

@@ -25,7 +25,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "../store/memory-store.js";
-import { DatabaseManager } from "../store/db.js";
+import type { DatabaseManager } from "../store/db.js";
 import {
   buildMemoryTargetRoutingGuidance,
   DEFAULT_FLUSH_COMPACT_TIMEOUT_MS,

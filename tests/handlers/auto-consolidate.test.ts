@@ -11,7 +11,6 @@ import * as os from "node:os";
 import { registerConsolidateCommand, triggerConsolidation } from "../../src/handlers/auto-consolidate.js";
 import { resolveWatchedChildPiInvocation } from "../../src/handlers/pi-child-process.js";
 import { MemoryStore } from "../../src/store/memory-store.js";
-import { AtomicLockCoordinator } from "../../src/store/atomic-lock-coordinator.js";
 import { DEFAULT_CONSOLIDATION_TIMEOUT_MS, ENTRY_DELIMITER } from "../../src/constants.js";
 
 // ─── Mock infrastructure ───
@@ -165,28 +164,13 @@ describe("triggerConsolidation", () => {
     assert.strictEqual(result.error, undefined);
   });
 
-  it("clears a failed release before the next consolidation", async () => {
-    const prototype = AtomicLockCoordinator.prototype as any;
-    const originalDeleteOwnedLock = prototype.deleteOwnedLock;
-    let deleteAttempts = 0;
-    prototype.deleteOwnedLock = function (key: string, token: string): void {
-      deleteAttempts++;
-      if (deleteAttempts <= 3) throw new Error("injected consolidation release failure");
-      return originalDeleteOwnedLock.call(this, key, token);
-    };
-
-    try {
-      const pi = createMockPi();
-      const first = await triggerConsolidation(pi, mockStore, "memory");
-      const second = await triggerConsolidation(pi, mockStore, "memory");
-
-      assert.strictEqual(first.consolidated, true);
-      assert.strictEqual(second.consolidated, true);
-      assert.strictEqual(execCalls.length, 2);
-      assert.ok(deleteAttempts >= 4);
-    } finally {
-      prototype.deleteOwnedLock = originalDeleteOwnedLock;
-    }
+  it("releases the lock so the next consolidation can proceed", async () => {
+    const pi = createMockPi();
+    const first = await triggerConsolidation(pi, mockStore, "memory");
+    const second = await triggerConsolidation(pi, mockStore, "memory");
+    assert.strictEqual(first.consolidated, true);
+    assert.strictEqual(second.consolidated, true);
+    assert.strictEqual(execCalls.length, 2);
   });
 
   it("defers a duplicate subprocess while the same target is consolidating", async () => {

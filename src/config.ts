@@ -43,7 +43,7 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
 
 const DEFAULT_CONFIG: MemoryConfig = {
   lazyInitialization: false,
-  memoryMode: "policy-only",
+  memoryMode: "legacy-inject",
   memoryPolicyStyle: "full",
   memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
   userCharLimit: DEFAULT_USER_CHAR_LIMIT,
@@ -69,7 +69,7 @@ const DEFAULT_CONFIG: MemoryConfig = {
   nudgeToolCalls: DEFAULT_NUDGE_TOOL_CALLS,
   standingInstructionsEnabled: true,
   projectsMemoryDir: DEFAULT_PROJECTS_MEMORY_DIR,
-  sessionSearch: { variant: "legacy" },
+  sessionSearch: { variant: "anchors" },
   quickCheckOnOpen: true,
   sessionRetentionDays: DEFAULT_SESSION_RETENTION_DAYS,
 };

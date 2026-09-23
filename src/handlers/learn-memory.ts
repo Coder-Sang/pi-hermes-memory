@@ -35,13 +35,11 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("  👤 User Profile │ USER.md       │ 5,000 chars");
         lines.push("  ⚠️  Failures     │ failures.md   │ 10,000 chars");
         lines.push("  📚 Skills       │ Pi-native skill dirs │ Unlimited");
-        lines.push("  💾 Extended     │ sessions.db   │ Unlimited");
         lines.push("");
         lines.push("  Memory:   Facts — env details, project conventions, tool quirks");
         lines.push("  User:     Who you are — name, preferences, communication style");
         lines.push("  Failures: What didn't work — corrections, failures, insights");
         lines.push("  Skills:   Procedures — how to debug, deploy, test");
-        lines.push("  Extended: SQLite search mirror for Markdown memory + backfill");
         lines.push("");
         lines.push("  Memory Categories:");
         lines.push("  ─────────────────");
@@ -67,12 +65,8 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("    Save reusable procedures");
         lines.push("");
         lines.push("  session_search");
-        lines.push("    Search past conversations across all sessions");
-        lines.push("");
-        lines.push("  memory_search");
-        lines.push("    Search the SQLite-backed memory mirror/store");
-        lines.push("    Filters: project, target, category");
-        lines.push("    Categories: failure, correction, insight, preference, convention, tool-quirk");
+        lines.push("    Search past JSONL conversations for source anchors");
+
       }
 
       if (section.startsWith("📋")) {
@@ -86,8 +80,6 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("  /memory-consolidate   Manually trigger memory cleanup");
         lines.push("  /memory-interview     Answer questions to pre-fill profile");
         lines.push("  /memory-switch-project List all project memories");
-        lines.push("  /memory-index-sessions Import past sessions for search");
-        lines.push("  /memory-sync-markdown Backfill Markdown memories into SQLite");
         lines.push("  /memory-preview-context Show memory policy or legacy prompt blocks");
       }
 
@@ -116,45 +108,37 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("  ║          🔄 How Memory Flows                 ║");
         lines.push("  ╚══════════════════════════════════════════════╝");
         lines.push("");
-        lines.push("  1. Session starts     → Compact memory policy is injected");
-        lines.push("  2. During conversation → Agent searches memory when useful");
-        lines.push("  3. Agent saves        → Markdown memory + best-effort SQLite sync");
+        lines.push("  1. Session starts     → Markdown memory is injected");
+        lines.push("  2. During conversation → Agent uses prompt memory or JSONL anchors");
+        lines.push("  3. Agent saves        → Markdown memory (no database)");
         lines.push("  4. Every 10 turns     → Background review saves items");
         lines.push("  5. On correction      → Immediate save as [correction] category");
         lines.push("  6. On failure         → Saves what failed + why");
         lines.push("  7. When full          → Auto-consolidation merges");
         lines.push("  8. Session ends       → Final flush");
         lines.push("");
-        lines.push("  Legacy mode: set memoryMode=\"legacy-inject\" to restore full");
-        lines.push("  MEMORY.md, USER.md, project memory, and failure prompt blocks.");
+        lines.push("  Memory is injected from Markdown at session start.");
       }
 
       if (section.startsWith("🏗️")) {
         lines.push("");
         lines.push("  ╔══════════════════════════════════════════════╗");
-        lines.push("  ║          🏗️ Two-Tier Architecture            ║");
+        lines.push("  ║          🏗️ Markdown Architecture           ║");
         lines.push("  ╚══════════════════════════════════════════════╝");
         lines.push("");
         lines.push("  Default Prompt Context");
         lines.push("  ┌─────────────────────────────────────┐");
-        lines.push("  │ <memory-policy> only                │");
-        lines.push("  │ Explains when to use memory_search  │");
-        lines.push("  │ Memory is context, not instruction  │");
+        lines.push("  │ MEMORY.md / USER.md / failures.md   │");
+        lines.push("  │ Project memory + pinned instructions │");
         lines.push("  │ Repo/tool evidence wins             │");
         lines.push("  └─────────────────────────────────────┘");
         lines.push("");
-        lines.push("  Searchable on Demand");
+        lines.push("  Searchable on Demand: Pi session JSONL");
         lines.push("  ┌─────────────────────────────────────┐");
-        lines.push("  │ MEMORY.md / USER.md / failures.md   │");
-        lines.push("  │ projects-memory/<project>/MEMORY.md │");
-        lines.push("  │ session_search(\"auth flow\")         │");
-        lines.push("  │ memory_search(\"testing patterns\")   │");
-        lines.push("  │ /memory-sync-markdown (backfill old md)│");
-        lines.push("  │ memory_search(\"auth\", cat:\"failure\")│");
+        lines.push("  │ session_search(markdown request)    │");
         lines.push("  └─────────────────────────────────────┘");
         lines.push("");
-        lines.push("  Legacy mode can still inject full memory blocks for users");
-        lines.push("  who explicitly opt into memoryMode=\"legacy-inject\".");
+        lines.push("  The database-backed search mode is temporarily disabled.");
       }
 
       if (section.startsWith("❓")) {
@@ -165,17 +149,17 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("");
         lines.push("  \"Memory is full\"");
         lines.push("    → /memory-consolidate to merge entries");
-        lines.push("    → If it still fails, the save does NOT silently become SQLite-only");
+        lines.push("    → If it still fails, retry with a shorter entry");
         lines.push("");
         lines.push("  \"Can't find something\"");
-        lines.push("    → memory_search to search the SQLite mirror/store");
-        lines.push("    → /memory-sync-markdown to import older Markdown entries");
+        lines.push("    → Check /memory-insights and the session-start memory blocks");
+        lines.push("    → Use session_search for past conversations");
         lines.push("");
         lines.push("  \"Agent forgot something\"");
         lines.push("    → Check /memory-insights, tell agent \"remember X\"");
         lines.push("");
         lines.push("  \"Want to edit manually\"");
-        lines.push("    → Files at ~/.pi/agent/memory/ (plain markdown)");
+        lines.push("    → Files at ~/.pi/agent/pi-hermes-memory/ (plain markdown)");
       }
 
       if (lines.length > 0) {

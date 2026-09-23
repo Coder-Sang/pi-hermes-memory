@@ -3,12 +3,9 @@
  * every session regardless of memoryMode.
  *
  * Why this is a separate store rather than a flag on MEMORY.md / USER.md
- * (#121): in policy-only mode a persisted constraint only takes effect if the
- * model decides to call memory_search *before* the action the constraint would
- * have prevented. For a prohibition that is exactly the moment the model has no
- * reason to look, so the recall path is structurally unable to enforce it,
- * independent of model quality. Such constraints have to be unconditionally
- * present instead.
+ * (#121): pinned user directives have distinct provenance and remain
+ * unconditionally present even if ordinary memory retrieval is disabled
+ * or the model overlooks an ordinary memory entry.
  *
  * Provenance is a property of the storage, not of a flag: background review,
  * consolidation and the correction detector all write through MemoryStore and

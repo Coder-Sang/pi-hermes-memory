@@ -24,11 +24,9 @@ export function resolveMemoryPolicyPrompt(config: MemoryPolicyConfig): string {
 }
 
 /**
- * Standing instructions are appended in *every* mode, including policy-only
- * and policy style "none". That is the whole point of the store: a rule the
- * user pinned must not depend on the model choosing to run memory_search
- * before the action it forbids (#121). They go last so they read as the
- * operative directive rather than as recalled context.
+ * Pinned user instructions are appended in every mode after ordinary memories.
+ * The extension currently forces full Markdown injection while on-demand search
+ * is unavailable, but keeps policy-only support here for compatibility.
  */
 export async function buildPromptContext(
   config: Pick<MemoryConfig, "memoryMode" | "memoryPolicyStyle" | "memoryPolicyCustomText">,

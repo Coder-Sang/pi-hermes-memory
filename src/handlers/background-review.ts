@@ -14,7 +14,7 @@ import {
   DIRECT_REVIEW_SYSTEM_PROMPT,
 } from "../constants.js";
 import { MemoryStore } from "../store/memory-store.js";
-import { DatabaseManager } from "../store/db.js";
+import type { DatabaseManager } from "../store/db.js";
 import type { MemoryConfig } from "../types.js";
 import type { EnsureMemoryReady } from "../memory-initialization.js";
 import { applyRecentMessageLimit, collectMessageParts } from "./message-parts.js";

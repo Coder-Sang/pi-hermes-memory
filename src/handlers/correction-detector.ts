@@ -10,7 +10,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "../store/memory-store.js";
-import { DatabaseManager } from "../store/db.js";
+import type { DatabaseManager } from "../store/db.js";
 import {
   buildMemoryTargetRoutingGuidance,
   CORRECTION_SAVE_PROMPT,

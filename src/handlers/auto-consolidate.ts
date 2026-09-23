@@ -20,7 +20,7 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "../store/memory-store.js";
-import { DatabaseManager } from "../store/db.js";
+import type { DatabaseManager } from "../store/db.js";
 import {
   CONSOLIDATION_PROMPT,
   DEFAULT_CONSOLIDATION_TIMEOUT_MS,
@@ -31,7 +31,7 @@ import type { ConsolidationResult, MemoryConfig } from "../types.js";
 import { AGENT_ROOT } from "../paths.js";
 import { execChildPrompt } from "./pi-child-process.js";
 import { runDirectMemoryCompletion, usesDirectTransport } from "./review-memory-ops.js";
-import { AtomicLockCoordinator } from "../store/atomic-lock-coordinator.js";
+import { FileLockCoordinator } from "../store/file-lock-coordinator.js";
 
 type MemoryTarget = "memory" | "user" | "failure";
 type ToolMemoryTarget = MemoryTarget | "project";
@@ -90,7 +90,7 @@ async function acquireConsolidationLock(
   const storageIdentity = await store.getStorageIdentity(target);
   const root = consolidationLockRoot();
   await fs.mkdir(root, { recursive: true });
-  const coordinator = AtomicLockCoordinator.shared(path.join(root, "locks.sqlite"));
+  const coordinator = FileLockCoordinator.shared(path.join(root, "locks"));
   const key = consolidationLockKey(target, toolTarget, storageIdentity);
   const lockOptions = { staleMs: CONSOLIDATION_LOCK_STALE_MS };
 

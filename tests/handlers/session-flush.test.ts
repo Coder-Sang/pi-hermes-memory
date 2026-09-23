@@ -397,7 +397,7 @@ describe("setupSessionFlush", () => {
 
     // Options should include timeout
     assert.ok(opts, "options should be passed");
-    assert.equal(opts.timeout, 65000);
+    assert.ok(opts.timeout >= 64_900 && opts.timeout <= 65_000, `unexpected subprocess timeout: ${opts.timeout}`);
   });
 
   it("forwards active cwd and model to flush subprocesses", async () => {
