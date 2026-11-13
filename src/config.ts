@@ -69,6 +69,8 @@ const DEFAULT_CONFIG: MemoryConfig = {
   nudgeToolCalls: DEFAULT_NUDGE_TOOL_CALLS,
   standingInstructionsEnabled: true,
   projectsMemoryDir: DEFAULT_PROJECTS_MEMORY_DIR,
+  projectMemoryEnabled: true,
+  sessionSearchEnabled: true,
   sessionSearch: { variant: "anchors" },
   quickCheckOnOpen: true,
   sessionRetentionDays: DEFAULT_SESSION_RETENTION_DAYS,
@@ -164,6 +166,11 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
       if (typeof parsed.memoryDir === "string") {
         const normalizedMemoryDir = normalizeConfiguredMemoryDir(parsed.memoryDir);
         if (normalizedMemoryDir) config.memoryDir = normalizedMemoryDir;
+      }
+      if (typeof parsed.projectMemoryEnabled === "boolean") config.projectMemoryEnabled = parsed.projectMemoryEnabled;
+      if (typeof parsed.sessionSearchEnabled === "boolean") config.sessionSearchEnabled = parsed.sessionSearchEnabled;
+      if (typeof parsed.projectMemoryDir === "string" && path.isAbsolute(parsed.projectMemoryDir.trim())) {
+        config.projectMemoryDir = path.normalize(parsed.projectMemoryDir.trim());
       }
       if (typeof parsed.projectsMemoryDir === "string") {
         const normalizedProjectsMemoryDir = normalizeProjectsMemoryDir(parsed.projectsMemoryDir);

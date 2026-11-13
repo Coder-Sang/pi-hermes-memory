@@ -6,6 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import type { MemoryConfig } from "./types.js";
 import { resolveProjectsRoot } from "./paths.js";
 
 export interface ProjectInfo {
@@ -154,4 +155,16 @@ export function detectProjectSkills(projectsMemoryDir = "projects-memory", cwd?:
     ...project,
     skillsDir: project.memoryDir ? path.join(project.memoryDir, "skills") : null,
   };
+}
+
+/** Host-selected exact leaf: never derive another project from a changed cwd. */
+export function resolveConfiguredProject(
+  config: Pick<MemoryConfig, "projectMemoryEnabled" | "projectMemoryDir" | "projectsMemoryDir">,
+  cwd?: string,
+): ProjectInfo {
+  if (config.projectMemoryEnabled === false) return { name: null, memoryDir: null };
+  if (config.projectMemoryDir) {
+    return { name: path.basename(config.projectMemoryDir), memoryDir: config.projectMemoryDir };
+  }
+  return detectProject(config.projectsMemoryDir, cwd);
 }

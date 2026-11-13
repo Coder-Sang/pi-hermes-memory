@@ -60,7 +60,7 @@ export function registerMarkdownMemoryReadTools(
   projectForCwd: (cwd?: string) => MemoryStore | null,
   lifecycle?: MemoryReadLifecycle,
 ): void {
-  const targetSchema = StringEnum(MEMORY_TARGETS, { description: "Memory scope. project means only the current working directory's project." });
+  const targetSchema = StringEnum(MEMORY_TARGETS, { description: "Memory scope. project means only the current configured project." });
   const renderResult = createSharedToolResultRenderer();
 
   const view = async (target: MemoryTarget, project: MemoryStore | null, signal?: AbortSignal): Promise<MarkdownMemoryView> => {

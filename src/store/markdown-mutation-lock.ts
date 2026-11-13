@@ -11,7 +11,8 @@ export async function canonicalMarkdownIdentity(filePath: string): Promise<strin
 
 export async function acquireMarkdownMutationLock(filePath: string): Promise<FileLockLease> {
   const identity = await canonicalMarkdownIdentity(filePath);
-  const coordinatorDir = path.dirname(path.dirname(identity));
+  // Keep lock state inside the mounted store, not its unshared parent.
+  const coordinatorDir = path.dirname(identity);
   const coordinator = FileLockCoordinator.shared(path.join(coordinatorDir, ".pi-hermes-locks"));
   const lockKey = `mutation:${identity}`;
   const deadline = Date.now() + MUTATION_WAIT_MS;

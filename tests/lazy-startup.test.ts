@@ -197,4 +197,68 @@ describe("Markdown-only startup lifecycle", () => {
     assert.equal(first.details.content, "first project fact");
     assert.equal(other.details.content, "other project fact");
   });
+  async function hostConfig(extra: Record<string, unknown>) {
+    const file = path.join(root, "hermes-memory-config.json");
+    await fs.writeFile(file, JSON.stringify({ ...JSON.parse(await fs.readFile(file, "utf8")), ...extra }));
+  }
+
+  it("honors the exact host leaf for reads, writes, skills and restart despite a different cwd", async () => {
+    const leaf = path.join(root, "host-storage", "opaque-project");
+    const global = path.join(root, "host-global");
+    await fs.mkdir(leaf, { recursive: true });
+    await fs.mkdir(global, { recursive: true });
+    await fs.writeFile(path.join(leaf, "MEMORY.md"), "host project fact");
+    await fs.writeFile(path.join(global, "MEMORY.md"), "host global fact");
+    await fs.writeFile(path.join(projectDir, "MEMORY.md"), "wrong cwd fact");
+    await hostConfig({ memoryDir: global, projectMemoryDir: leaf, sessionSearchEnabled: false,
+      memoryPolicyStyle: "custom", memoryPolicyCustomText: "<memory-policy>custom lookup policy</memory-policy>" });
+    register();
+    await emit("session_start");
+    assert.equal(tools.session_search, undefined);
+    assert.equal(commands["memory-switch-project"], undefined);
+    const policy = (await emit("before_agent_start", { systemPrompt: "base" })).systemPrompt;
+    assert.match(policy, /custom lookup policy/);
+    assert.doesNotMatch(policy, /host project fact|host global fact/);
+    const resources = await emit("resources_discover", { cwd });
+    assert.ok(resources.skillPaths.includes(path.join(leaf, "skills")));
+    assert.ok(!resources.skillPaths.includes(path.join(projectDir, "skills")));
+    for (let restart = 0; restart < 2; restart++) {
+      const read = await tools.memory_read.execute("r", { target: "project" }, undefined, undefined, ctx);
+      assert.match(read.details.content, /host project fact/);
+      assert.doesNotMatch(read.details.content, /wrong cwd fact/);
+      const found = await tools.memory_search.execute("s", { target: "project", query: "host project" }, undefined, undefined, ctx);
+      assert.equal(found.details.count, 1);
+      const globalRead = await tools.memory_read.execute("r", { target: "memory" }, undefined, undefined, ctx);
+      assert.match(globalRead.details.content, /host global fact/);
+      if (restart === 0) {
+        const add = await tools.memory_add.execute("a", { target: "project", content: "host persisted addition" }, undefined, undefined, ctx);
+        assert.equal(add.details.success, true);
+        assert.match(await fs.readFile(path.join(leaf, "MEMORY.md"), "utf8"), /host persisted addition/);
+        await emit("session_shutdown", { reason: "quit" });
+        handlers = {}; tools = {}; commands = {};
+        register(); await emit("session_start");
+      } else assert.match(read.details.content, /host persisted addition/);
+    }
+    assert.equal(existsSync(path.join(global, "sessions.db")), false);
+    assert.equal(existsSync(path.join(leaf, "opaque-project")), false);
+  });
+
+  it("never guesses a disabled/missing host project and keeps global retrieval available", async () => {
+    await fs.rm(path.join(root, "projects-memory"), { recursive: true });
+    const forbiddenLeaf = path.join(root, "must-not-create");
+    await hostConfig({ projectMemoryEnabled: false, projectMemoryDir: forbiddenLeaf, sessionSearchEnabled: false });
+    register(); await emit("session_start");
+    assert.equal(tools.session_search, undefined);
+    const resources = await emit("resources_discover", { cwd });
+    assert.ok(!resources.skillPaths.some((p: string) => p.includes("must-not-create") || p.includes("projects-memory")));
+    const read = await tools.memory_read.execute("r", { target: "project" }, undefined, undefined, ctx);
+    assert.equal(read.details.error, "project_unavailable");
+    const add = await tools.memory_add.execute("a", { target: "project", content: "must not persist" }, undefined, undefined, ctx);
+    assert.equal(add.details.success, false);
+    const found = await tools.memory_search.execute("s", { query: "durable global" }, undefined, undefined, ctx);
+    assert.equal(found.details.count, 1);
+    assert.equal(existsSync(forbiddenLeaf), false);
+    assert.equal(existsSync(path.join(root, "projects-memory")), false);
+  });
+
 });

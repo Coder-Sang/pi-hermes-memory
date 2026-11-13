@@ -181,7 +181,8 @@ export async function syncMarkdownMemoriesToSqlite(
         );
       }
     };
-    if (filePath) await withMarkdownMutationLock(filePath, reconcile);
+    // Do not recreate a deleted project merely to lock a read-only reconciliation.
+    if (filePath && fs.existsSync(path.dirname(filePath))) await withMarkdownMutationLock(filePath, reconcile);
     else reconcile();
   };
 

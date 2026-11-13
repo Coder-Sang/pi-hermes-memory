@@ -55,6 +55,12 @@ export interface MemoryConfig {
   memoryDir?: string;
   /** Directory for project-scoped memory (relative to ~/.pi/agent). Default: "projects-memory" */
   projectsMemoryDir?: string;
+  /** Enable project memory/skills. False skips project discovery and migration. Default: true. */
+  projectMemoryEnabled?: boolean;
+  /** Exact project store leaf supplied by a host; bypasses cwd/Git identity discovery. */
+  projectMemoryDir?: string;
+  /** Register session_search. False disables JSONL session discovery/search. Default: true. */
+  sessionSearchEnabled?: boolean;
   /** Session search configuration. Default: { variant: "legacy" } */
   sessionSearch?: SessionSearchConfig;
   /** Run a full SQLite quick_check asynchronously after opening. Default: true */

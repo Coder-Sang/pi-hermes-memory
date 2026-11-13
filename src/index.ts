@@ -23,6 +23,7 @@
  */
 
 import * as path from "node:path";
+import type { MemoryConfig } from "./types.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "./store/memory-store.js";
 import { SkillStore } from "./store/skill-store.js";
@@ -45,7 +46,7 @@ import { StandingInstructions } from "./store/standing-instructions.js";
 import { STANDING_FILE } from "./constants.js";
 import { loadConfig } from "./config.js";
 import { shouldWarnAutoConsolidationFailure } from "./auto-consolidation-warning.js";
-import { detectProject, detectProjectSkills } from "./project.js";
+import { detectProject, resolveConfiguredProject } from "./project.js";
 import { buildPromptContext } from "./prompt-context.js";
 import { migrateLegacyProjectMemoryDirs } from "./project-memory-migration.js";
 import { AGENT_ROOT } from "./paths.js";
@@ -57,8 +58,10 @@ export function resolveProjectSkillDiscovery(
   skillStore: SkillStore,
   projectsMemoryDir: string | undefined,
   cwd?: string,
+  config: Pick<MemoryConfig, "projectMemoryEnabled" | "projectMemoryDir"> = {},
 ): { skillPaths: string[] } {
-  const detected = detectProjectSkills(projectsMemoryDir, cwd);
+  const project = resolveConfiguredProject({ ...config, projectsMemoryDir }, cwd);
+  const detected = { ...project, skillsDir: project.memoryDir ? path.join(project.memoryDir, "skills") : null };
   skillStore.setProjectContext(detected.name, detected.skillsDir);
 
   // Pi auto-discovers its own `~/.pi/agent/skills/`, but this extension keeps
@@ -74,9 +77,10 @@ export function registerProjectSkillDiscoveryHandler(
   pi: Pick<ExtensionAPI, "on">,
   skillStore: SkillStore,
   projectsMemoryDir: string | undefined,
+  config: Pick<MemoryConfig, "projectMemoryEnabled" | "projectMemoryDir"> = {},
 ): void {
   pi.on("resources_discover", async (event, _ctx) => {
-    return resolveProjectSkillDiscovery(skillStore, projectsMemoryDir, (event as { cwd?: string }).cwd);
+    return resolveProjectSkillDiscovery(skillStore, projectsMemoryDir, (event as { cwd?: string }).cwd, config);
   });
 }
 
@@ -116,7 +120,7 @@ export default function (pi: ExtensionAPI) {
   // Markdown and skill files are the only runtime persistence stores.
 
   const refreshSkillProjectContext = (cwd?: string) => {
-    const resource = resolveProjectSkillDiscovery(skillStore, config.projectsMemoryDir, cwd);
+    const resource = resolveProjectSkillDiscovery(skillStore, config.projectsMemoryDir, cwd, config);
     return {
       name: skillStore.getProjectName(),
       skillsDir: skillStore.getProjectSkillsDir(),
@@ -127,7 +131,9 @@ export default function (pi: ExtensionAPI) {
   // Keep project memory available for users upgrading from the old
   // ~/.pi/agent/<project>/ layout. This is non-destructive: legacy folders
   // remain in place while entries are copied/merged into projects-memory/.
-  migrateLegacyProjectMemoryDirs(agentRoot, config.projectsMemoryDir);
+  if (config.projectMemoryEnabled !== false && !config.projectMemoryDir) {
+    migrateLegacyProjectMemoryDirs(agentRoot, config.projectsMemoryDir);
+  }
   // Project-scoped store: ~/.pi/agent/<projectsMemoryDir>/<project_name>/
   // Bound from session/tool ctx.cwd, never from factory process.cwd().
   const createProjectStore = (projectInfo: ReturnType<typeof detectProject>): MemoryStore | null => {
@@ -145,8 +151,8 @@ export default function (pi: ExtensionAPI) {
   const projectNameRef = () => projectName;
   let configureProjectStore: (candidate: MemoryStore | null) => void = () => {};
   const bindProjectFromCwd = async (cwd?: string): Promise<void> => {
-    if (!cwd) return;
-    const nextProject = detectProject(config.projectsMemoryDir, cwd);
+    if (!cwd && !config.projectMemoryDir && config.projectMemoryEnabled !== false) return;
+    const nextProject = resolveConfiguredProject(config, cwd);
     const nextProjectMemoryDir = nextProject.memoryDir ?? null;
     if (nextProjectMemoryDir !== projectMemoryDir) {
       projectMemoryDir = nextProjectMemoryDir;
@@ -196,7 +202,7 @@ export default function (pi: ExtensionAPI) {
     await skillStore.ensureDiscoveredRoots();
   });
 
-  registerProjectSkillDiscoveryHandler(pi, skillStore, config.projectsMemoryDir);
+  registerProjectSkillDiscoveryHandler(pi, skillStore, config.projectsMemoryDir, config);
 
   // ── 2. Append stable policy, or explicitly selected legacy memory ──
   pi.on("before_agent_start", async (event, _ctx) => {
@@ -212,7 +218,7 @@ export default function (pi: ExtensionAPI) {
   // ── 3. Register Markdown memory write tools ──
   registerMarkdownMemoryTool(memoryPi, store, projectStoreRef, bindProjectFromCwd);
   registerMarkdownMemoryReadTools(pi, store,
-    (cwd) => cwd ? createProjectStore(detectProject(config.projectsMemoryDir, cwd)) : null,
+    (cwd) => createProjectStore(resolveConfiguredProject(config, cwd)),
     initialization);
 
   // ── 4. Register the skill tool ──
@@ -270,11 +276,11 @@ export default function (pi: ExtensionAPI) {
   registerInsightsCommand(memoryPi, store, projectStoreRef, projectNameRef);
   registerSkillsCommand(pi, skillStore);
   registerInterviewCommand(memoryPi, store);
-  registerSwitchProjectCommand(pi, config);
+  if (config.projectMemoryEnabled !== false && !config.projectMemoryDir) registerSwitchProjectCommand(pi, config);
   registerLearnMemoryCommand(pi);
   registerPreviewContextCommand(lazy ? pi : memoryPi, store, projectStoreRef, projectNameRef, config, standingStore);
   if (standingStore) registerStandingPinCommand(pi, standingStore);
-  registerJsonlSessionSearchTool(pi);
+  if (config.sessionSearchEnabled !== false) registerJsonlSessionSearchTool(pi);
 
   // Registered after flush so pending memory operations finish before shutdown.
   pi.on("session_shutdown", async () => {

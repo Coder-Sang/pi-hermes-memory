@@ -138,3 +138,6 @@ _Done when: v0.2.0 is tagged and released with updated docs._
 | 4: Tool-Call Nudge | MEDIUM | Low | 0 | 3 (types, config, background-review, test) |
 | 1: Skill Tool | CRITICAL | High | 8 (4 src + 4 test) | 3 (constants, index, memory-store) |
 | 5: Documentation | NORMAL | Low | 0 | 4 (README, constants, ROADMAP, package.json) |
+
+## Gateway-selected persistent stores
+- [x] Support exact `projectMemoryDir`, independent `projectMemoryEnabled` and `sessionSearchEnabled`, with persisted restart and disabled-project regression tests. Verified TypeScript and 164 focused/lifecycle tests on the Markdown-only 7e73601 base; runtime package pin/release remains a separate gate.

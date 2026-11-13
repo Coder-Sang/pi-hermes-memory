@@ -233,7 +233,7 @@ describe('memory sqlite sync + markdown backfill', () => {
     addMemory(dbManager, 'stale memory');
 
     const identity = fs.realpathSync(memoryFile);
-    const coordinator = new FileLockCoordinator(path.join(path.dirname(path.dirname(identity)), '.pi-hermes-locks'));
+    const coordinator = new FileLockCoordinator(path.join(path.dirname(identity), '.pi-hermes-locks'));
     const lease = coordinator.tryAcquire(`mutation:${identity}`, { staleMs: 300_000 });
     assert.ok(lease);
 

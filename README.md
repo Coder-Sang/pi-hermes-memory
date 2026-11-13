@@ -676,3 +676,40 @@ MIT
 ---
 
 **[Full Roadmap →](docs/ROADMAP.md)** · **[Changelog →](CHANGELOG.md)**
+
+### Host-selected persistent stores
+
+A host such as Gateway may write `hermes-memory-config.json` beneath
+`PI_CODING_AGENT_DIR` before loading this extension:
+
+```json
+{
+  "memoryDir": "/users/user-id/.pi/agent/pi-hermes-memory",
+  "projectMemoryEnabled": true,
+  "projectMemoryDir": "/users/user-id/.pi/agent/project-memory",
+  "sessionSearchEnabled": false
+}
+```
+
+`projectMemoryDir` is an absolute **store leaf**, not a parent to which the
+extension appends a cwd/Git-derived identity. The host mounts only its selected
+current project's storage there. A later tool cwd or extra work directory does
+not select another project. This mode skips legacy project-directory migration
+and project-switch discovery. Global memory and other existing settings retain
+their behavior.
+
+For an empty work-directory list, set `projectMemoryEnabled: false` and omit
+`projectMemoryDir`. This prevents project memory creation, cwd/Git discovery,
+and project skill discovery; global memory remains available. Both new boolean
+switches default to `true` for existing standalone users. Setting
+`sessionSearchEnabled: false` omits the `session_search` tool, so that tool cannot
+scan JSONL sessions. It does not disable the active session context used by
+review/flush. Loading this config alone does not load the extension.
+
+Markdown mutation locks now live inside each store leaf (`.pi-hermes-locks`),
+so a mounted leaf also carries its lock state. This is **not a distributed lock
+guarantee**: the existing coordinator uses local PID checks and expiring file
+leases, and relies on the backing filesystem's atomic operations. Different
+Pods/PID namespaces may invalidate those assumptions; concurrent multi-Pod
+writers require further extension-side coordination work. Do not mix old and
+new writers during the lock-directory transition. Gateway adds no per-Run lock.

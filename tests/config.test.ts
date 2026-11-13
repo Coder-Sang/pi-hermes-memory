@@ -533,3 +533,24 @@ describe("loadConfig", () => {
     assert.strictEqual(config.correctionDirectiveWords, undefined);
   });
 });
+
+describe("host persistence configuration", () => {
+  it("retains independent project and session-search switches and unrelated settings", () => {
+    fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify({
+      memoryDir: "/mounted/global", projectMemoryEnabled: false,
+      projectMemoryDir: "/mounted/current-project", sessionSearchEnabled: false,
+      reviewEnabled: false, projectCharLimit: 9000,
+    }));
+    const config = loadConfig(TEST_CONFIG_PATH);
+    assert.equal(config.memoryDir, "/mounted/global");
+    assert.equal(config.projectMemoryDir, "/mounted/current-project");
+    assert.equal(config.projectMemoryEnabled, false);
+    assert.equal(config.sessionSearchEnabled, false);
+    assert.equal(config.reviewEnabled, false);
+    assert.equal(config.projectCharLimit, 9000);
+  });
+  it("does not interpret a relative project leaf as a new project root", () => {
+    fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify({ projectMemoryDir: "relative" }));
+    assert.equal(loadConfig(TEST_CONFIG_PATH).projectMemoryDir, undefined);
+  });
+});

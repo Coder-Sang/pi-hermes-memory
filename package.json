@@ -3,8 +3,9 @@
   "version": "0.9.9",
   "description": "Persistent Markdown memory, JSONL session anchor search, secret scanning, auto-consolidation and skills for Pi.",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "index.ts",
   "files": [
+    "index.ts",
     "src",
     "scripts",
     "README.md",
@@ -13,7 +14,7 @@
   ],
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./index.ts"
     ]
   },
   "scripts": {
@@ -47,7 +48,8 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.80.6",
-    "@earendil-works/pi-coding-agent": ">=0.80.6"
+    "@earendil-works/pi-coding-agent": ">=0.80.6",
+    "@earendil-works/pi-tui": ">=0.80.2"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.80.2",
@@ -59,7 +61,6 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "^0.80.2",
     "strip-ansi": "7.2.0"
   }
 }
