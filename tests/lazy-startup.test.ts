@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import * as os from "node:os";
@@ -12,6 +13,7 @@ process.env.PI_CODING_AGENT_DIR = root;
 const { default: registerExtension } = await import("../src/index.js");
 const globalDir = path.join(root, "pi-hermes-memory");
 const cwd = path.join(root, "workspace");
+const projectDir = path.join(root, "projects-memory", "workspace");
 let handlers: Record<string, Array<(event: any, ctx: any) => any>>;
 let tools: Record<string, any>;
 let commands: Record<string, any>;
@@ -34,6 +36,7 @@ async function emit(event: string, data: any = {}) {
 beforeEach(async () => {
   await fs.mkdir(globalDir, { recursive: true });
   await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(projectDir, { recursive: true });
   await fs.writeFile(path.join(globalDir, "MEMORY.md"), "durable global fact");
   await fs.writeFile(path.join(root, "hermes-memory-config.json"), JSON.stringify({
     memoryMode: "policy-only", lazyInitialization: true,
@@ -57,19 +60,20 @@ after(async () => {
 });
 
 describe("Markdown-only startup lifecycle", () => {
-  it("does not register SQLite search or index commands", async () => {
+  it("registers read/search tools without SQLite index commands or memory injection", async () => {
     register();
-    assert.deepEqual(Object.keys(tools).sort(), ["memory_add", "memory_remove", "memory_replace", "session_search", "skill_manage"]);
+    assert.deepEqual(Object.keys(tools).sort(), ["memory_add", "memory_read", "memory_remove", "memory_replace", "memory_search", "session_search", "skill_manage"]);
     assert.equal(commands["memory-index-sessions"], undefined);
     assert.equal(commands["memory-sync-markdown"], undefined);
     await emit("session_start");
     const before = await emit("before_agent_start", { systemPrompt: "base" });
-    assert.match(before.systemPrompt, /durable global fact/);
-    assert.doesNotMatch(before.systemPrompt, /memory_search/);
+    assert.doesNotMatch(before.systemPrompt, /durable global fact/);
+    assert.match(before.systemPrompt, /memory_search/);
+    assert.match(before.systemPrompt, /memory_read/);
     assert.equal(existsSync(path.join(globalDir, "sessions.db")), false);
   });
 
-  it("uses a frozen Markdown prompt snapshot and persists writes without a DB", async () => {
+  it("keeps policy stable while persisting and retrieving writes without a DB", async () => {
     register();
     await emit("session_start");
     const before = await emit("before_agent_start", { systemPrompt: "base" });
@@ -78,6 +82,8 @@ describe("Markdown-only startup lifecycle", () => {
     const after = await emit("before_agent_start", { systemPrompt: "base" });
     assert.equal(before.systemPrompt, after.systemPrompt);
     assert.match(await fs.readFile(path.join(globalDir, "MEMORY.md"), "utf8"), /new durable fact/);
+    const read = await tools.memory_read.execute("read", { target: "memory" }, undefined, undefined, ctx);
+    assert.match(read.details.content, /new durable fact/);
     assert.equal(existsSync(path.join(globalDir, "sessions.db")), false);
   });
 
@@ -103,8 +109,92 @@ describe("Markdown-only startup lifecycle", () => {
     await fs.writeFile(path.join(legacy, "sessions.db"), "preserve old database");
     register();
     await emit("session_start");
+    await tools.memory_read.execute("read", { target: "user" }, undefined, undefined, ctx);
     assert.match(await fs.readFile(path.join(globalDir, "USER.md"), "utf8"), /legacy durable preference/);
     assert.equal(await fs.readFile(path.join(legacy, "sessions.db"), "utf8"), "preserve old database");
     assert.equal(existsSync(path.join(globalDir, "sessions.db")), false);
+  });
+
+  it("keeps system and tool definitions stable across every memory mutation and restart", async () => {
+    const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const definitions = () => Object.values(tools).map(({ name, description, parameters, promptSnippet, promptGuidelines }) => ({ name, description, parameters, promptSnippet, promptGuidelines }));
+    register();
+    await emit("session_start");
+    const system = (await emit("before_agent_start", { systemPrompt: "base" })).systemPrompt;
+    const toolHash = fingerprint(definitions());
+    for (const target of ["memory", "user", "project", "failure"]) {
+      const added = await tools.memory_add.execute("add", { target, content: `durable ${target} audit item` }, undefined, undefined, ctx);
+      assert.equal(added.details.success, true);
+      const found = await tools.memory_search.execute("search", { target, query: "audit item" }, undefined, undefined, ctx);
+      assert.equal(found.details.count, 1);
+      const hit = found.details.results[0];
+      const read = await tools.memory_read.execute("read", { target, offset: hit.offset, limit: hit.length, revision: hit.revision }, undefined, undefined, ctx);
+      assert.match(read.details.content, /audit item/);
+      const replaced = await tools.memory_replace.execute("replace", { target, old_text: read.details.content, content: `changed ${target} audit item` }, undefined, undefined, ctx);
+      assert.equal(replaced.details.success, true);
+      const removed = await tools.memory_remove.execute("remove", { target, old_text: `changed ${target} audit item` }, undefined, undefined, ctx);
+      assert.equal(removed.details.success, true);
+      assert.equal((await emit("before_agent_start", { systemPrompt: "base" })).systemPrompt, system);
+      assert.equal(fingerprint(definitions()), toolHash);
+    }
+    await fs.writeFile(path.join(globalDir, "USER.md"), "externally changed user preference");
+    assert.match((await tools.memory_read.execute("read", { target: "user" }, undefined, undefined, ctx)).details.content, /externally changed/);
+    await emit("session_shutdown", { reason: "quit" });
+    handlers = {}; tools = {}; commands = {};
+    register();
+    await emit("session_start");
+    assert.equal((await emit("before_agent_start", { systemPrompt: "base" })).systemPrompt, system);
+    assert.equal(fingerprint(definitions()), toolHash);
+    assert.equal(existsSync(path.join(globalDir, "sessions.db")), false);
+  });
+
+  it("uses policy-only by default and honors explicit legacy-inject", async () => {
+    for (const mode of [undefined, "legacy-inject"]) {
+      await fs.writeFile(path.join(root, "hermes-memory-config.json"), JSON.stringify({
+        ...(mode ? { memoryMode: mode } : {}), lazyInitialization: true,
+        reviewEnabled: false, correctionDetection: false, flushOnCompact: false, flushOnShutdown: false,
+      }));
+      handlers = {}; tools = {}; commands = {};
+      register();
+      await emit("session_start");
+      const system = (await emit("before_agent_start", { systemPrompt: "base" })).systemPrompt;
+      assert.equal(system.includes("durable global fact"), mode === "legacy-inject");
+      assert.equal(system.includes("<memory-policy>"), mode !== "legacy-inject");
+      await emit("session_shutdown", { reason: "quit" });
+    }
+  });
+
+  it("loads pinned directives and skills while deferring ordinary memory initialization", async () => {
+    const legacy = path.join(root, "memory");
+    await fs.mkdir(legacy);
+    await fs.writeFile(path.join(legacy, "USER.md"), "deferred preference");
+    await fs.writeFile(path.join(globalDir, "STANDING.md"), "Always keep the user's source files intact.\n");
+    register();
+    await emit("session_start");
+    assert.equal(existsSync(path.join(globalDir, "USER.md")), false);
+    const system = (await emit("before_agent_start", { systemPrompt: "base" })).systemPrompt;
+    assert.match(system, /Always keep the user's source files intact/);
+    assert.equal(existsSync(path.join(globalDir, "USER.md")), false);
+    const resources = await emit("resources_discover", { cwd });
+    assert.ok(resources.skillPaths.length > 0);
+    const read = await tools.memory_read.execute("read", { target: "user" }, undefined, undefined, ctx);
+    assert.match(read.details.content, /deferred preference/);
+  });
+
+  it("resolves each read to the supplied current project instead of a stale binding", async () => {
+    const otherCwd = path.join(root, "other-project");
+    const otherMemory = path.join(root, "projects-memory", "other-project");
+    await fs.mkdir(otherCwd);
+    await fs.mkdir(otherMemory);
+    await fs.writeFile(path.join(projectDir, "MEMORY.md"), "first project fact");
+    await fs.writeFile(path.join(otherMemory, "MEMORY.md"), "other project fact");
+    register();
+    await emit("session_start");
+    const [first, other] = await Promise.all([
+      tools.memory_read.execute("first", { target: "project" }, undefined, undefined, ctx),
+      tools.memory_read.execute("other", { target: "project" }, undefined, undefined, { ...ctx, cwd: otherCwd }),
+    ]);
+    assert.equal(first.details.content, "first project fact");
+    assert.equal(other.details.content, "other project fact");
   });
 });

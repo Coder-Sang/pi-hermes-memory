@@ -73,7 +73,8 @@ describe("registerPreviewContextCommand", () => {
     assert.match(out, /Mode: policy-only/);
     assert.match(out, /Policy style: full/);
     assert.match(out, /Full Markdown memories are NOT injected/);
-    assert.doesNotMatch(out, /memory_search/);
+    assert.match(out, /memory_search/);
+    assert.match(out, /memory_read/);
     assert.match(out, /failure: failures/);
     assert.ok(out.includes(MEMORY_POLICY_PROMPT));
     assert.match(out, /Blocks shown: 1/);

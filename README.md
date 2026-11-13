@@ -29,14 +29,14 @@ pi install npm:pi-hermes-memory
 /learn-memory-tool
 ```
 
-**Temporary SQLite-free mode:** This checkout no longer registers `memory_search`,
-`/memory-index-sessions`, or `/memory-sync-markdown`. `session_search` scans the
-original Pi JSONL sessions and returns source anchors; memory is loaded from
-Markdown into the prompt at session start. Existing `sessions.db` files are
-left untouched for a future migration. Restart any older Pi sessions before using
-this version: the new file locks cannot coordinate with an older process still
-holding SQLite locks. An existing `policy-only`, `legacy` session-search, or
-lazy-initialization setting is ignored while this mode is active.
+**SQLite-free runtime:** Default `policy-only` mode adds fixed memory usage rules
+to system text. `memory_search` searches Markdown entries; `memory_read` retrieves
+full text with bounded, revision-checked pagination. `session_search` separately
+scans original Pi JSONL sessions. Existing `sessions.db` files remain untouched;
+`/memory-index-sessions` and `/memory-sync-markdown` remain unavailable. Explicit
+`legacy-inject` is supported. `lazyInitialization: true` defers ordinary memory
+loading in `policy-only`. Restart older Pi processes before upgrading: file locks
+cannot coordinate with older SQLite-backed writers. See [Memory retrieval](docs/memory-retrieval.md).
 
 ## Upgrade Notes (v0.7.10)
 
@@ -55,14 +55,27 @@ On startup, legacy Markdown files are copied (without overwriting existing files
 | 🔄 **Auto-Consolidation** | When legacy-inject memory hits capacity, auto-merges instead of erroring |
 | 🛡️ **Secret Scanning** | API keys, tokens, SSH keys blocked from persistence |
 | 📊 **Memory Aging** | Entries carry timestamps — consolidation knows what's stale |
-| 🏗️ **Two-Tier Memory** | Global + per-project Markdown memory, injected at session start |
+| 🏗️ **Two-Tier Memory** | Global + current-project Markdown memory, retrieved on demand |
 | 🎓 **Onboarding** | `/memory-interview` pre-fills your profile on first session |
 
 ## How It Works
 
 ### Session Lifecycle
 
-![Session Lifecycle](docs/images/session-lifecycle.svg)
+```mermaid
+sequenceDiagram
+    participant Pi
+    participant Hermes
+    participant Markdown
+    Pi->>Hermes: session_start
+    Hermes-->>Pi: Fixed memory policy and user-pinned instructions
+    Pi->>Hermes: memory_search / memory_read
+    Hermes->>Markdown: Read committed entries
+    Markdown-->>Hermes: Current facts
+    Hermes-->>Pi: Tool result appended to conversation
+    Pi->>Hermes: memory_add / memory_replace / memory_remove
+    Hermes->>Markdown: Publish updated memory
+```
 
 ### Memory + Skills Architecture
 
@@ -70,11 +83,21 @@ The extension manages three types of knowledge:
 
 | Type | What | Storage | Token cost |
 |---|---|---|---|
-| **Memory** (MEMORY.md) | Facts — env details, project conventions, tool quirks | 5,000 chars max | Injected at session start |
-| **User Profile** (USER.md) | Who you are — name, preferences, communication style | 5,000 chars max | Injected at session start |
+| **Memory** (MEMORY.md) | Facts — env details, project conventions, tool quirks | 5,000-char legacy injection budget | Retrieved on demand |
+| **User Profile** (USER.md) | Who you are — name, preferences, communication style | 5,000-char legacy injection budget | Retrieved on demand |
 | **Skills** (Pi-native `SKILL.md`) | Procedures — *how* to do something, reusable across sessions | Unlimited | Discoverable by Pi + manageable via the `skill_manage` tool |
 
-![Memory + Skills Architecture](docs/images/memory-architecture.svg)
+```mermaid
+flowchart LR
+    Memory[Markdown memory] -->|memory_read / memory_search|Results[Tool results]
+    Sessions[Pi JSONL sessions] -->|session_search|Results
+    Results --> History[Conversation history]
+    Rules[Fixed policy and pinned instructions] --> System[System prompt]
+    Skills[Pi-native skill discovery] --> System
+```
+
+See [on-demand retrieval](docs/memory-retrieval.md) for scopes, pagination and
+cache stability boundaries.
 
 ### Security: Content Scanning
 
@@ -130,7 +153,7 @@ In one conversation, ask:
 
 Start a **new session** and ask:
 
-> Ask the agent what project codename it remembers.
+> Use memory_search to recall my project codename.
 
 Use `memory_replace` to update a saved fact and `memory_remove` to delete it.
 The package manages Markdown memory files under `$DSH_HOME/pi2dsh/agent/`
@@ -143,12 +166,18 @@ The extension stores memory at two levels:
 
 | Tier | Location | What goes here | Available when |
 |---|---|---|---|
-| **Global** | `~/.pi/agent/pi-hermes-memory/` | Facts that apply everywhere — your name, preferences, OS, tools | Injected at session start |
-| **Project** | `~/.pi/agent/projects-memory/<project>/` | Facts scoped to one codebase — architecture decisions, API quirks, team norms | Injected when cwd matches the project |
+| **Global** | `~/.pi/agent/pi-hermes-memory/` | Facts that apply everywhere — your name, preferences, OS, tools | Read/search on demand |
+| **Project** | `~/.pi/agent/projects-memory/<project>/` | Facts scoped to one codebase — architecture decisions, API quirks, team norms | Read/search for the current cwd only |
 
-Markdown memories are injected into the system prompt at session start as a frozen snapshot. Stored facts remain context, not higher-priority instructions; current user requests and repo evidence take precedence.
+Default `memoryMode: "policy-only"` injects fixed usage rules, not ordinary memory
+contents. Read/search results enter the conversation as tool results. Stored
+facts remain context; current user requests and repository evidence take precedence.
 
-`memoryMode: "policy-only"` is temporarily treated as `legacy-inject` so existing configurations do not hide memory now that `memory_search` is unavailable.
+Explicit `legacy-inject` retains automatic Markdown injection for compatibility
+and memory updates can change the system prefix. In `policy-only`, ordinary
+memory writes, searches, and reads do not change system text or tool definitions.
+Pinned instructions, Pi's discovered skills, tool configuration, and policy
+configuration can still change the prefix.
 
 ## Standing Instructions
 
@@ -194,7 +223,7 @@ The agent learns from failures, corrections, and insights — just like humans d
 1. **Auto-detection**: Background review extracts failures from conversations
 2. **Correction capture**: When you correct the agent, it saves what went wrong
 3. **Search guidance**: The memory policy tells the agent when to search failures instead of injecting them by default
-4. **Available next session**: The new memory is injected at the next session start
+4. **Available immediately**: The next memory_read or memory_search sees the committed Markdown update
 
 ### Example
 
@@ -225,6 +254,21 @@ The agent gets action-specific memory tools it can call proactively:
 | `memory_remove` | `target`, `old_text` | Delete an existing entry matched by substring |
 
 Targets are `memory`, `user`, `project`, and `failure`. Failure writes may also include `category` and `failure_reason`.
+
+### Memory read and search tools
+
+- `memory_read({target, offset?, limit?, revision?})` returns metadata-free text.
+  Offsets count Unicode code points; pages default to 8,000 and cap at 16,000.
+  Continue using `nextOffset` and `revision`.
+- `memory_search({query, target?, category?, limit?})` matches all literal
+  whitespace-separated keywords after Unicode NFKC normalization and lowercasing.
+  It returns up to 10 entries by default, at most 20, with excerpts and positions
+  for `memory_read`. Regex, FTS operators, and fuzzy matching are not interpreted.
+
+Both tools read committed Markdown, including external edits, without changing
+the system prompt or modifying database files. Only the current project is
+accessible through `target: "project"`. Read full entries before replacement or
+removal; excerpts may be incomplete. See [API and configuration details](docs/memory-retrieval.md).
 
 ### The `skill_manage` Tool
 
@@ -305,8 +349,8 @@ This lets Pi discover project skills as native skills without copying them into 
 
 | Store | File | What goes here | Limit |
 |---|---|---|---|
-| **memory** | `MEMORY.md` | Agent's notes — env facts, project conventions, tool quirks, lessons learned | 5,000 chars |
-| **user** | `USER.md` | User profile — name, preferences, communication style, habits | 5,000 chars |
+| **memory** | `MEMORY.md` | Agent's notes — env facts, project conventions, tool quirks, lessons learned | 5,000-char legacy budget |
+| **user** | `USER.md` | User profile — name, preferences, communication style, habits | 5,000-char legacy budget |
 | **skills** | `~/.pi/agent/pi-hermes-memory/skills/<slug>/SKILL.md` or `projects-memory/<project>/skills/<slug>/SKILL.md` | Procedures — *how* to debug, deploy, test, or fix something | Unlimited |
 
 
@@ -334,7 +378,12 @@ The default anchor search reads Pi JSONL directly; the old `legacy` SQLite snipp
 
 ### Memory Storage
 
-The extension writes Markdown memory files only. `memory_add`, `memory_replace`, and `memory_remove` update the files; the next session prompt includes the saved entries. `/memory-insights` shows what is stored. When full, the configured consolidation strategy applies. Existing SQLite files are left untouched.
+The extension writes Markdown memory files only. `memory_add`, `memory_replace`,
+and `memory_remove` update files; read/search calls observe saved entries.
+`/memory-insights` shows what is stored. Existing injection-capacity and
+consolidation rules apply in `legacy-inject`. `policy-only` does not enforce those
+storage caps; retrieval pages bound what enters model context. Existing SQLite
+files remain untouched.
 
 ### Correction Detection
 
@@ -358,7 +407,8 @@ In `legacy-inject` mode, when memory, user profile, or failure memory hits its c
 3. The parent reloads from disk and retries the original save
 4. If consolidation fails, the original error returns
 
-A configured `policy-only` mode is temporarily treated as `legacy-inject` and obeys the same Markdown capacity limits.
+`policy-only` does not enforce legacy injection budgets. Manual consolidation
+remains available when needed.
 
 ### Tool-Call-Aware Review
 
@@ -371,7 +421,12 @@ Both counters reset after each review.
 
 ### Direct-Transport LLM Calls (Review, Flush, Correction, Consolidation)
 
-By default, background review, session flush, correction save, and the manual `/memory-consolidate` command use an in-process `completeSimple()` side-channel: a small JSON-only prompt, no child `pi` process, and memory writes applied directly by the extension. This keeps the main session's system prompt, tools, and LLM prefix cache intact, and avoids the subprocess path's argv/`--no-extensions` concerns entirely on the common path.
+By default, background review, session flush, correction save, and the manual
+`/memory-consolidate` command use an in-process `completeSimple()` side-channel:
+a small JSON-only prompt with memory writes applied directly by the extension.
+Review instructions stay out of main-session history. In `policy-only`, the
+resulting ordinary memory updates also leave system text and tool definitions
+unchanged. Explicit `legacy-inject` retains the cache limitations described above.
 
 If direct mode fails (no model, no auth, provider error, unparseable response, or — for consolidation only — a result that didn't actually free any space), it automatically falls back to the legacy `pi -p --no-session` subprocess path. The automatic over-capacity consolidator triggered from `MemoryStore` itself always uses the subprocess path, since it runs without extension-runtime access.
 
@@ -399,7 +454,7 @@ This means skills build up naturally over time without you having to ask.
 | `/memory-consolidate` | Manually trigger memory consolidation to free space |
 | `/memory-interview` | Answer a few questions to pre-fill your user profile |
 | `/memory-switch-project` | List all project memories and their entry counts |
-| `/memory-preview-context` | Preview Markdown memory blocks appended to the system prompt |
+| `/memory-preview-context` | Preview fixed policy and pins, or explicitly selected legacy memory blocks |
 | `/learn-memory-tool` | Skill that teaches users how to use the memory system |
 
 ### `/memory-insights` Output
@@ -458,7 +513,7 @@ Create `~/.pi/agent/hermes-memory-config.json`:
 ```json
 {
   "lazyInitialization": false,
-  "memoryMode": "legacy-inject",
+  "memoryMode": "policy-only",
   "memoryPolicyStyle": "full",
   "memoryCharLimit": 5000,
   "userCharLimit": 5000,
@@ -496,14 +551,14 @@ Create `~/.pi/agent/hermes-memory-config.json`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `lazyInitialization` | `false` | Temporarily ignored; Markdown memory is eagerly loaded for prompt injection |
-| `memoryMode` | `legacy-inject` | Temporarily always injects Markdown memory, even when configured as `policy-only` |
-| `memoryPolicyStyle` | `full` | Temporarily unused while Markdown memory is injected |
-| `memoryPolicyCustomText` | unset | Temporarily unused |
+| `lazyInitialization` | `false` | In policy-only mode, defer ordinary memory initialization until first use |
+| `memoryMode` | `policy-only` | Fixed usage rules and on-demand tools; explicit legacy-inject retains automatic memory injection |
+| `memoryPolicyStyle` | `full` | Fixed policy verbosity: full, compact, custom, or none |
+| `memoryPolicyCustomText` | unset | Custom system policy text when memoryPolicyStyle is custom |
 | `standingInstructionsEnabled` | `true` | Inject `STANDING.md` (pinned via `/memory-pin`) into every session, in every memory mode |
-| `memoryCharLimit` | `5000` | Max characters in MEMORY.md |
-| `userCharLimit` | `5000` | Max characters in USER.md |
-| `projectCharLimit` | `5000` | Max characters in project-scoped MEMORY.md |
+| `memoryCharLimit` | `5000` | Legacy-inject character budget for MEMORY.md |
+| `userCharLimit` | `5000` | Legacy-inject character budget for USER.md |
+| `projectCharLimit` | `5000` | Legacy-inject character budget for project MEMORY.md |
 | `memoryDir` | `~/.pi/agent/pi-hermes-memory` | Custom directory for extension storage files |
 | `projectsMemoryDir` | `projects-memory` | Subdirectory under `~/.pi/agent/` for project-scoped memory |
 | `sessionSearch` | `{ "variant": "anchors" }` | Temporarily always uses JSONL anchor search (the configured SQLite `legacy` variant is ignored) |
@@ -538,7 +593,10 @@ Create `~/.pi/agent/hermes-memory-config.json`:
 
 ### Lazy Initialization
 
-Temporarily unavailable: Markdown memory must be loaded at session start for prompt injection. `lazyInitialization` is ignored until on-demand retrieval is restored.
+Set `lazyInitialization: true` with `memoryMode: "policy-only"` to defer ordinary
+memory initialization until a memory operation needs it. Pinned instructions
+and native skills remain available at startup. `legacy-inject` eagerly loads
+memory because it must render the selected prompt contents.
 
 ## Diagnosing lifecycle latency
 

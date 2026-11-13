@@ -27,6 +27,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "./store/memory-store.js";
 import { SkillStore } from "./store/skill-store.js";
 import { registerMarkdownMemoryTool } from "./tools/markdown-memory-tool.js";
+import { registerMarkdownMemoryReadTools } from "./tools/markdown-memory-read-tools.js";
 import { registerJsonlSessionSearchTool } from "./tools/jsonl-session-search-tool.js";
 import { registerSkillTool } from "./tools/skill-tool.js";
 import { setupBackgroundReview } from "./handlers/background-review.js";
@@ -80,9 +81,8 @@ export function registerProjectSkillDiscoveryHandler(
 }
 
 export default function (pi: ExtensionAPI) {
-  const loadedConfig = loadConfig();
-  // A policy-only prompt without memory_search would hide all stored facts.
-  const config = { ...loadedConfig, memoryMode: "legacy-inject" as const };
+  const config = loadConfig();
+  const lazy = config.lazyInitialization === true && config.memoryMode === "policy-only";
 
   const agentRoot = AGENT_ROOT;
   const legacyGlobalDir = path.join(agentRoot, "memory");
@@ -190,7 +190,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     // Pinned directives must not depend on memory migration being healthy.
     if (standingStore) await standingStore.load();
-    await ensureMemoryReady(ctx);
+    if (!lazy) await ensureMemoryReady(ctx);
     refreshSkillProjectContext(ctx.cwd);
     await skillStore.migrateLegacySkills();
     await skillStore.ensureDiscoveredRoots();
@@ -198,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 
   registerProjectSkillDiscoveryHandler(pi, skillStore, config.projectsMemoryDir);
 
-  // ── 2. Inject a frozen Markdown memory snapshot ──
+  // ── 2. Append stable policy, or explicitly selected legacy memory ──
   pi.on("before_agent_start", async (event, _ctx) => {
     const promptContext = await buildPromptContext(config, store, projectStoreRef(), projectNameRef(), standingStore);
 
@@ -211,6 +211,9 @@ export default function (pi: ExtensionAPI) {
 
   // ── 3. Register Markdown memory write tools ──
   registerMarkdownMemoryTool(memoryPi, store, projectStoreRef, bindProjectFromCwd);
+  registerMarkdownMemoryReadTools(pi, store,
+    (cwd) => cwd ? createProjectStore(detectProject(config.projectsMemoryDir, cwd)) : null,
+    initialization);
 
   // ── 4. Register the skill tool ──
   registerSkillTool(pi, skillStore);
@@ -269,7 +272,7 @@ export default function (pi: ExtensionAPI) {
   registerInterviewCommand(memoryPi, store);
   registerSwitchProjectCommand(pi, config);
   registerLearnMemoryCommand(pi);
-  registerPreviewContextCommand(memoryPi, store, projectStoreRef, projectNameRef, config, standingStore);
+  registerPreviewContextCommand(lazy ? pi : memoryPi, store, projectStoreRef, projectNameRef, config, standingStore);
   if (standingStore) registerStandingPinCommand(pi, standingStore);
   registerJsonlSessionSearchTool(pi);
 

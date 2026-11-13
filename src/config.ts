@@ -43,7 +43,7 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
 
 const DEFAULT_CONFIG: MemoryConfig = {
   lazyInitialization: false,
-  memoryMode: "legacy-inject",
+  memoryMode: "policy-only",
   memoryPolicyStyle: "full",
   memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
   userCharLimit: DEFAULT_USER_CHAR_LIMIT,

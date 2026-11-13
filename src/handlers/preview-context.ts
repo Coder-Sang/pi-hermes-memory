@@ -45,6 +45,7 @@ export function registerPreviewContextCommand(
         lines.push(`  Policy style: ${config.memoryPolicyStyle ?? "full"}`);
         lines.push("  This is the memory policy appended to the system prompt.");
         lines.push("  Full Markdown memories are NOT injected in this mode.");
+        lines.push("  Use memory_search and memory_read on demand; their results are appended to the conversation.");
         lines.push("");
         let blockCount = 0;
         if (policyPrompt) {

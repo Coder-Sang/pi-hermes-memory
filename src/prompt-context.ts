@@ -24,9 +24,8 @@ export function resolveMemoryPolicyPrompt(config: MemoryPolicyConfig): string {
 }
 
 /**
- * Pinned user instructions are appended in every mode after ordinary memories.
- * The extension currently forces full Markdown injection while on-demand search
- * is unavailable, but keeps policy-only support here for compatibility.
+ * Pinned user instructions remain present in every mode, including policy style
+ * none. Ordinary memories are retrieved through tools in policy-only mode.
  */
 export async function buildPromptContext(
   config: Pick<MemoryConfig, "memoryMode" | "memoryPolicyStyle" | "memoryPolicyCustomText">,

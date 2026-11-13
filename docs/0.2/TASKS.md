@@ -8,6 +8,12 @@
 
 ---
 
+## Markdown On-Demand Retrieval
+
+- [x] Restore policy-only defaults; add bounded memory_read and literal Markdown memory_search; validate cache stability without SQLite. Implemented in the working tree; not committed.
+
+---
+
 ## Epic 2: Auto-Consolidation
 
 _Done when: memory full no longer returns an error — it triggers automatic consolidation and retries the add._

@@ -26,11 +26,11 @@ export interface MemoryConfig {
   memoryPolicyStyle?: "full" | "compact" | "custom" | "none";
   /** Custom policy prompt text used when memoryPolicyStyle is custom */
   memoryPolicyCustomText?: string;
-  /** Max chars for MEMORY.md (agent notes). Default: 5000 */
+  /** Legacy-inject budget for MEMORY.md (agent notes). Default: 5000 */
   memoryCharLimit: number;
-  /** Max chars for USER.md (user profile). Default: 5000 */
+  /** Legacy-inject budget for USER.md (user profile). Default: 5000 */
   userCharLimit: number;
-  /** Max chars for project-level MEMORY.md. Default: 5000 */
+  /** Legacy-inject budget for project-level MEMORY.md. Default: 5000 */
   projectCharLimit: number;
   /** Turns between background auto-reviews. Default: 10 */
   nudgeInterval: number;
@@ -83,7 +83,7 @@ export interface MemoryConfig {
   correctionNegativePatterns?: string[];
   /** Override directive words used after weak correction patterns. Missing = defaults; [] = none. */
   correctionDirectiveWords?: string[];
-  /** Inject recent failure memories into the system prompt. Default: true */
+  /** Inject recent failures in legacy-inject mode only. Default: true */
   failureInjectionEnabled: boolean;
   /** Maximum age in days for injected failure memories. Default: 7 */
   failureInjectionMaxAgeDays: number;

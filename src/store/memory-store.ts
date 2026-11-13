@@ -38,6 +38,7 @@ import type {
 import { AGENT_ROOT } from "../paths.js";
 import { canonicalMarkdownIdentity, withMarkdownMutationLock } from "./markdown-mutation-lock.js";
 import { publishFile, type FileIdentity } from "./publish-file.js";
+import { markdownMemoryView, type MarkdownMemoryView, type MemoryStorageTarget } from "./markdown-memory-view.js";
 
 const MAX_EXTERNAL_WRITE_RETRIES = 2;
 const RECOVERY_ACTIVE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -169,6 +170,15 @@ export class MemoryStore {
       memory: this.renderBlock("memory", strippedMemory),
       user: this.renderBlock("user", strippedUser),
     };
+  }
+
+  /** Read committed Markdown without mutating entries or the injection snapshot. */
+  async readView(target: MemoryStorageTarget, signal?: AbortSignal): Promise<MarkdownMemoryView> {
+    signal?.throwIfAborted();
+    const filePath = await this.resolveStoragePath(target);
+    const state = await this.readFileState(filePath, signal);
+    signal?.throwIfAborted();
+    return markdownMemoryView([...new Set(state.entries)].map((entry) => this.stripMetadata(entry)));
   }
 
   /**
@@ -780,9 +790,9 @@ export class MemoryStore {
     return createHash("sha256").update(content).digest("hex");
   }
 
-  private async readFileState(filePath: string): Promise<{ entries: string[]; fingerprint: string; size: number }> {
+  private async readFileState(filePath: string, signal?: AbortSignal): Promise<{ entries: string[]; fingerprint: string; size: number }> {
     try {
-      const raw = await fs.readFile(filePath);
+      const raw = await fs.readFile(filePath, { signal });
       const content = raw.toString("utf-8");
       const entries = content.trim()
         ? content.split(ENTRY_DELIMITER).map((entry) => entry.trim()).filter(Boolean)

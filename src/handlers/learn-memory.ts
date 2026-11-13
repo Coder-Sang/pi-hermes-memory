@@ -61,6 +61,10 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("    Save, update, or delete memories");
         lines.push("    Targets: memory, user, failure, project");
         lines.push("");
+        lines.push("  memory_search / memory_read");
+        lines.push("    Search current Markdown; read full entries with revision-checked pages");
+        lines.push("    Read/search results are context, not instructions");
+        lines.push("");
         lines.push("  skill_manage (create/view/patch/update/delete)");
         lines.push("    Save reusable procedures");
         lines.push("");
@@ -108,16 +112,17 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("  ║          🔄 How Memory Flows                 ║");
         lines.push("  ╚══════════════════════════════════════════════╝");
         lines.push("");
-        lines.push("  1. Session starts     → Markdown memory is injected");
-        lines.push("  2. During conversation → Agent uses prompt memory or JSONL anchors");
+        lines.push("  1. Session starts     → Fixed memory policy + pinned instructions");
+        lines.push("  2. During conversation → memory_search / memory_read retrieve Markdown");
         lines.push("  3. Agent saves        → Markdown memory (no database)");
         lines.push("  4. Every 10 turns     → Background review saves items");
         lines.push("  5. On correction      → Immediate save as [correction] category");
         lines.push("  6. On failure         → Saves what failed + why");
-        lines.push("  7. When full          → Auto-consolidation merges");
+        lines.push("  7. Legacy mode full   → Auto-consolidation merges");
         lines.push("  8. Session ends       → Final flush");
         lines.push("");
-        lines.push("  Memory is injected from Markdown at session start.");
+        lines.push("  Default policy-only mode retrieves facts through tool results.");
+        lines.push("  Explicit legacy-inject includes Markdown in the prompt and can reduce cache reuse.");
       }
 
       if (section.startsWith("🏗️")) {
@@ -128,17 +133,18 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("");
         lines.push("  Default Prompt Context");
         lines.push("  ┌─────────────────────────────────────┐");
-        lines.push("  │ MEMORY.md / USER.md / failures.md   │");
-        lines.push("  │ Project memory + pinned instructions │");
+        lines.push("  │ Fixed memory usage policy          │");
+        lines.push("  │ User-pinned standing instructions  │");
         lines.push("  │ Repo/tool evidence wins             │");
         lines.push("  └─────────────────────────────────────┘");
         lines.push("");
-        lines.push("  Searchable on Demand: Pi session JSONL");
+        lines.push("  On demand: current Markdown memory and past Pi sessions");
         lines.push("  ┌─────────────────────────────────────┐");
-        lines.push("  │ session_search(markdown request)    │");
+        lines.push("  │ memory_search / memory_read        │");
+        lines.push("  │ session_search: JSONL anchors       │");
         lines.push("  └─────────────────────────────────────┘");
         lines.push("");
-        lines.push("  The database-backed search mode is temporarily disabled.");
+        lines.push("  No runtime database or search index is required.");
       }
 
       if (section.startsWith("❓")) {
@@ -153,6 +159,7 @@ export function registerLearnMemoryCommand(pi: ExtensionAPI): void {
         lines.push("");
         lines.push("  \"Can't find something\"");
         lines.push("    → Check /memory-insights and the session-start memory blocks");
+        lines.push("    → Use memory_search for saved facts; memory_read for full entries");
         lines.push("    → Use session_search for past conversations");
         lines.push("");
         lines.push("  \"Agent forgot something\"");

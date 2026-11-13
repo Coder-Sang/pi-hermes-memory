@@ -21,7 +21,8 @@ describe("buildPromptContext", () => {
     );
 
     assert.strictEqual(result, MEMORY_POLICY_PROMPT);
-    assert.doesNotMatch(result, /memory_search/);
+    assert.match(result, /memory_search/);
+    assert.match(result, /memory_read/);
     assert.match(result, /Memory write targets/);
     assert.match(result, /session_search: search Pi session JSONL files for source anchors/);
     assert.match(result, /skill_manage: manage procedural skills/);
@@ -54,9 +55,9 @@ describe("buildPromptContext", () => {
     );
 
     assert.strictEqual(result, MEMORY_POLICY_PROMPT_COMPACT);
-    assert.match(result, /Stored Markdown memory is already in the prompt/);
+    assert.match(result, /Use memory_search before answering/);
     assert.match(result, /session_search: search Pi session JSONL files for source anchors/);
-    assert.doesNotMatch(result, /memory_search/);
+    assert.match(result, /memory_search/);
     assert.doesNotMatch(result, /MEMORY<\/memory-context>/);
     assert.doesNotMatch(result, /PROJECT demo/);
     assert.doesNotMatch(result, /SKILLS/);
